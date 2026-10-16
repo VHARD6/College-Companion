@@ -1,0 +1,6 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Mobile-friendly tap targets */
+* { -webkit-tap-highlight-color: transparent; }
