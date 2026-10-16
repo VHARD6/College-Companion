@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { createClient } from '@supabase/supabase-js'
 import { supabase } from '../../lib/supabase'
 import TopBar from '../../components/ui/TopBar'
 import Button from '../../components/ui/Button'
@@ -9,7 +8,7 @@ import Select from '../../components/ui/Select'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import toast from 'react-hot-toast'
-import { UserPlus, FileSpreadsheet, Search, Edit3, X } from 'lucide-react'
+import { UserPlus, FileSpreadsheet, Search, Edit3, X, AlertCircle, RefreshCw } from 'lucide-react'
 import { normalizeEmail, validateEmail } from '../../lib/authUtils'
 import type { Role } from '../../types'
 
@@ -54,7 +53,13 @@ export default function AdminUsersPage() {
   const [isImporting, setIsImporting] = useState(false)
 
   // Fetch all user profiles with attached student & professor records
-  const { data: users, isLoading } = useQuery({
+  const {
+    data: users,
+    isLoading: isUsersLoading,
+    isError: isUsersError,
+    error: usersError,
+    refetch: refetchUsers,
+  } = useQuery({
     queryKey: ['admin-users'],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -85,7 +90,8 @@ export default function AdminUsersPage() {
   const { data: departments } = useQuery({
     queryKey: ['departments-list'],
     queryFn: async () => {
-      const { data } = await supabase.from('departments').select('*').order('name')
+      const { data, error } = await supabase.from('departments').select('*').order('name')
+      if (error) throw error
       return data ?? []
     },
   })
@@ -93,7 +99,8 @@ export default function AdminUsersPage() {
   const { data: classes } = useQuery({
     queryKey: ['classes-list'],
     queryFn: async () => {
-      const { data } = await supabase.from('classes').select('*, departments(name)').order('name')
+      const { data, error } = await supabase.from('classes').select('*, departments(name)').order('name')
+      if (error) throw error
       return data ?? []
     },
   })
@@ -103,7 +110,8 @@ export default function AdminUsersPage() {
     queryKey: ['batches-list', form.classId],
     enabled: !!form.classId,
     queryFn: async () => {
-      const { data } = await supabase.from('batches').select('*').eq('class_id', Number(form.classId))
+      const { data, error } = await supabase.from('batches').select('*').eq('class_id', Number(form.classId))
+      if (error) throw error
       return data ?? []
     },
   })
@@ -113,12 +121,13 @@ export default function AdminUsersPage() {
     queryKey: ['batches-list', editClassId],
     enabled: !!editClassId,
     queryFn: async () => {
-      const { data } = await supabase.from('batches').select('*').eq('class_id', Number(editClassId))
+      const { data, error } = await supabase.from('batches').select('*').eq('class_id', Number(editClassId))
+      if (error) throw error
       return data ?? []
     },
   })
 
-  // Create Single User Mutation
+  // Create Single User Mutation (Strictly through secure Edge Function)
   const createUserMutation = useMutation({
     mutationFn: async () => {
       if (!form.name || !form.email || !form.password) {
@@ -131,77 +140,33 @@ export default function AdminUsersPage() {
         throw new Error(emailCheck.error)
       }
 
-      // 1. Attempt server-side creation via Supabase Edge Function
-      try {
-        const { data: funcData, error: funcError } = await supabase.functions.invoke('admin-create-user', {
-          body: {
-            name: form.name.trim(),
-            email: cleanEmail,
-            password: form.password,
-            role: form.role,
-            rollNo: form.rollNo,
-            classId: form.classId,
-            batchId: form.batchId,
-            departmentId: form.departmentId,
-          },
-        })
-
-        if (!funcError && funcData?.success) {
-          return funcData.user
-        }
-      } catch (err) {
-        console.warn('admin-create-user edge function call skipped or unavailable, using fallback:', err)
-      }
-
-      // 2. Fallback: Ephemeral Auth client that does NOT overwrite Admin's localStorage session
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-      const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
-      const ephemeralAuth = createClient(supabaseUrl, supabaseAnonKey, {
-        auth: { persistSession: false, autoRefreshToken: false },
-      })
-
-      const { data: authData, error: authErr } = await ephemeralAuth.auth.signUp({
-        email: cleanEmail,
-        password: form.password,
-        options: {
-          data: {
-            name: form.name.trim(),
-            role: form.role,
-            roll_no: form.rollNo.trim() || undefined,
-          },
+      // Invoke server-side Edge Function with service-role security
+      const { data: funcData, error: funcError } = await supabase.functions.invoke('admin-create-user', {
+        body: {
+          name: form.name.trim(),
+          email: cleanEmail,
+          password: form.password,
+          role: form.role,
+          rollNo: form.rollNo,
+          classId: form.classId,
+          batchId: form.batchId,
+          departmentId: form.departmentId,
         },
       })
-      if (authErr) throw authErr
 
-      const userId = authData.user?.id
-      if (!userId) throw new Error('User creation returned no ID')
-
-      // Ensure profile is updated
-      await supabase.from('profiles').upsert({
-        id: userId,
-        name: form.name.trim(),
-        role: form.role,
-        is_active: true,
-      })
-
-      // Insert role-specific assignments
-      if (form.role === 'student' && form.rollNo) {
-        const { error: sErr } = await supabase.from('students').upsert({
-          user_id: userId,
-          roll_no: form.rollNo.trim(),
-          class_id: form.classId ? Number(form.classId) : null,
-          batch_id: form.batchId ? Number(form.batchId) : null,
-        }, { onConflict: 'user_id' })
-        if (sErr) throw sErr
-      } else if (form.role === 'professor' && form.departmentId) {
-        const { error: pErr } = await supabase.from('professors').upsert({
-          user_id: userId,
-          department_id: Number(form.departmentId),
-        }, { onConflict: 'user_id' })
-        if (pErr) throw pErr
+      if (funcError) {
+        throw new Error(funcError.message || 'Failed to communicate with admin-create-user Edge Function.')
       }
 
-      return authData.user
+      if (funcData?.error) {
+        throw new Error(funcData.error)
+      }
+
+      if (!funcData?.success) {
+        throw new Error('User creation did not return success confirmation.')
+      }
+
+      return funcData.user
     },
     onSuccess: () => {
       toast.success(`User ${form.name} created!`)
@@ -217,6 +182,7 @@ export default function AdminUsersPage() {
         departmentId: '',
       })
       queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+      queryClient.invalidateQueries({ queryKey: ['admin-stats'] })
     },
     onError: (err: any) => {
       toast.error(err.message ?? 'Failed to create user')
@@ -295,7 +261,7 @@ export default function AdminUsersPage() {
     onError: (err: any) => toast.error(err.message),
   })
 
-  // Bulk CSV Import
+  // Bulk CSV Import (Strictly through secure Edge Function)
   async function handleCsvImport() {
     if (!csvText.trim()) {
       toast.error('Please enter CSV data')
@@ -311,12 +277,6 @@ export default function AdminUsersPage() {
     setIsImporting(true)
     let successCount = 0
     let errorCount = 0
-
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
-    const ephemeralAuth = createClient(supabaseUrl, supabaseAnonKey, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    })
 
     // Header: name,email,password,roll_no,class_name,batch_name
     for (let i = 1; i < lines.length; i++) {
@@ -339,13 +299,13 @@ export default function AdminUsersPage() {
 
         let targetBatchId: number | null = null
         if (batch_name) {
-          const { data: bData } = await supabase
+          const { data: bData, error: bErr } = await supabase
             .from('batches')
             .select('id')
             .eq('class_id', targetClass.id)
             .ilike('name', batch_name)
             .maybeSingle()
-          if (bData) targetBatchId = bData.id
+          if (!bErr && bData) targetBatchId = bData.id
         }
 
         const cleanEmail = normalizeEmail(email)
@@ -354,22 +314,22 @@ export default function AdminUsersPage() {
           throw new Error(`Line ${i}: ${emailCheck.error}`)
         }
 
-        // Ephemeral client sign up
-        const { data: authData, error: authErr } = await ephemeralAuth.auth.signUp({
-          email: cleanEmail,
-          password,
-          options: { data: { name: name.trim(), role: 'student', roll_no: roll_no.trim() } },
+        // Provision via admin-create-user Edge Function
+        const { data: funcData, error: funcError } = await supabase.functions.invoke('admin-create-user', {
+          body: {
+            name: name.trim(),
+            email: cleanEmail,
+            password,
+            role: 'student',
+            rollNo: roll_no.trim(),
+            classId: String(targetClass.id),
+            batchId: targetBatchId ? String(targetBatchId) : undefined,
+          },
         })
-        if (authErr) throw authErr
-        const uid = authData.user?.id
-        if (!uid) throw new Error('No user id returned')
 
-        await supabase.from('students').upsert({
-          user_id: uid,
-          roll_no: roll_no.trim(),
-          class_id: targetClass.id,
-          batch_id: targetBatchId,
-        }, { onConflict: 'user_id' })
+        if (funcError || !funcData?.success) {
+          throw new Error(funcError?.message || funcData?.error || 'Failed to create student')
+        }
 
         successCount++
       } catch (e) {
@@ -382,6 +342,7 @@ export default function AdminUsersPage() {
     setShowCsvImport(false)
     setCsvText('')
     queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+    queryClient.invalidateQueries({ queryKey: ['admin-stats'] })
     toast.success(`CSV Import complete: ${successCount} added, ${errorCount} errors.`)
   }
 
@@ -692,8 +653,18 @@ export default function AdminUsersPage() {
         </div>
 
         {/* Users List */}
-        {isLoading ? (
+        {isUsersLoading ? (
           <div className="flex justify-center py-12"><Spinner className="h-8 w-8" /></div>
+        ) : isUsersError ? (
+          <div className="p-4 bg-red-50 border border-red-200 rounded-2xl text-center space-y-2">
+            <AlertCircle size={24} className="text-red-500 mx-auto" />
+            <p className="text-sm font-semibold text-red-900">Failed to load user accounts</p>
+            <p className="text-xs text-red-600">{(usersError as any)?.message || 'Database query error'}</p>
+            <Button size="sm" variant="outline" onClick={() => refetchUsers()}>
+              <RefreshCw size={14} className="mr-1.5" />
+              Retry
+            </Button>
+          </div>
         ) : filteredUsers?.length === 0 ? (
           <p className="text-center text-gray-400 py-12 text-sm">No users found</p>
         ) : (

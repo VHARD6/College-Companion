@@ -4,47 +4,84 @@ import { useAuth } from '../../hooks/useAuth'
 import TopBar from '../../components/ui/TopBar'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import Button from '../../components/ui/Button'
 import { calcPercent } from '../../lib/attendance'
+import { AlertCircle, RefreshCw } from 'lucide-react'
 
 export default function ProfessorReportsPage() {
   const { profile } = useAuth()
 
   // Fetch current user's professor record
-  const { data: professor, isLoading: profLoading } = useQuery({
+  const {
+    data: professor,
+    isLoading: profLoading,
+    isError: isProfError,
+    error: profError,
+    refetch: refetchProf,
+  } = useQuery({
     queryKey: ['my-professor', profile?.id],
     enabled: !!profile,
     queryFn: async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('professors')
         .select('id')
         .eq('user_id', profile!.id)
         .maybeSingle()
+      if (error) throw error
       return data
     },
   })
 
   // Fetch only teaching assignments for this professor
-  const { data: assignments, isLoading: assignmentsLoading } = useQuery({
+  const {
+    data: assignments,
+    isLoading: assignmentsLoading,
+    isError: isAssignmentsError,
+    error: assignmentsError,
+    refetch: refetchAssignments,
+  } = useQuery({
     queryKey: ['prof-reports', professor?.id],
     enabled: !!professor?.id,
     queryFn: async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('teaching_assignments')
         .select('id, subjects(name, code), classes(name, semester), batches(name)')
         .eq('professor_id', professor!.id)
+      if (error) throw error
       return data ?? []
     },
   })
 
   const isLoading = profLoading || assignmentsLoading
+  const hasError = isProfError || isAssignmentsError
+  const errorMessage = (profError as any)?.message || (assignmentsError as any)?.message
 
   return (
     <div>
       <TopBar title="Reports" showBack />
       <div className="p-4 space-y-4">
+        {hasError && (
+          <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-center space-y-2">
+            <AlertCircle size={24} className="text-red-500 mx-auto" />
+            <p className="font-semibold text-red-900 text-sm">Failed to load reports</p>
+            <p className="text-xs text-red-600">{errorMessage || 'Database query error'}</p>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                refetchProf()
+                refetchAssignments()
+              }}
+            >
+              <RefreshCw size={14} className="mr-1.5" />
+              Retry
+            </Button>
+          </div>
+        )}
+
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner className="h-8 w-8" /></div>
-        ) : !professor ? (
+        ) : hasError ? null : !professor ? (
           <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-center">
             <p className="font-semibold text-amber-900 text-sm">Professor Record Missing</p>
             <p className="text-xs text-amber-700 mt-1">
@@ -71,27 +108,29 @@ function AssignmentReport({ assignment }: { assignment: any }) {
   const cls = assignment.classes
   const batch = assignment.batches
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['report-detail', assignment.id],
     queryFn: async () => {
       // Get all submitted sessions for this assignment
-      const { data: sessions } = await supabase
+      const { data: sessions, error: sErr } = await supabase
         .from('sessions')
         .select('id, date')
         .eq('teaching_assignment_id', assignment.id)
         .eq('status', 'submitted')
         .order('date', { ascending: false })
 
+      if (sErr) throw sErr
       if (!sessions || sessions.length === 0) return { sessions: [], studentStats: [] }
 
       const sessionIds = sessions.map(s => s.id)
 
       // Get attendance records aggregated by student
-      const { data: records } = await supabase
+      const { data: records, error: rErr } = await supabase
         .from('attendance_records')
         .select('student_id, status, students(roll_no, profiles(name))')
         .in('session_id', sessionIds)
 
+      if (rErr) throw rErr
       if (!records) return { sessions, studentStats: [] }
 
       // Group by student
@@ -130,8 +169,19 @@ function AssignmentReport({ assignment }: { assignment: any }) {
 
       {isLoading ? (
         <Spinner className="h-6 w-6" />
+      ) : isError ? (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-center space-y-1">
+          <p className="text-xs text-red-700">Failed to load statistics: {(error as any)?.message}</p>
+          <button
+            type="button"
+            onClick={() => refetch()}
+            className="text-xs text-blue-600 font-medium hover:underline inline-flex items-center gap-1"
+          >
+            <RefreshCw size={12} /> Retry
+          </button>
+        </div>
       ) : data?.studentStats.length === 0 ? (
-        <p className="text-xs text-gray-400">No attendance data yet</p>
+        <p className="text-xs text-gray-400">No attendance data recorded yet</p>
       ) : (
         <div className="space-y-2">
           {data?.studentStats.map(student => {

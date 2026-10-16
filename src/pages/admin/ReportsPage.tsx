@@ -4,17 +4,24 @@ import { supabase } from '../../lib/supabase'
 import TopBar from '../../components/ui/TopBar'
 import Spinner from '../../components/ui/Spinner'
 import Badge from '../../components/ui/Badge'
+import Button from '../../components/ui/Button'
 import { formatDate } from '../../lib/utils'
-import { History, FileText } from 'lucide-react'
+import { History, FileText, AlertCircle, RefreshCw } from 'lucide-react'
 
 export default function ReportsPage() {
   const [activeTab, setActiveTab] = useState<'sessions' | 'audit'>('sessions')
 
   // Recent submitted sessions
-  const { data: sessions, isLoading: sessionsLoading } = useQuery({
+  const {
+    data: sessions,
+    isLoading: sessionsLoading,
+    isError: isSessionsError,
+    error: sessionsError,
+    refetch: refetchSessions,
+  } = useQuery({
     queryKey: ['admin-submitted-sessions'],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('sessions')
         .select(`
           id,
@@ -32,15 +39,22 @@ export default function ReportsPage() {
         .eq('status', 'submitted')
         .order('submitted_at', { ascending: false })
         .limit(30)
+      if (error) throw error
       return data ?? []
     },
   })
 
   // Audit logs query
-  const { data: auditLogs, isLoading: auditLoading } = useQuery({
+  const {
+    data: auditLogs,
+    isLoading: auditLoading,
+    isError: isAuditError,
+    error: auditError,
+    refetch: refetchAudit,
+  } = useQuery({
     queryKey: ['admin-audit-logs'],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('attendance_audit_log')
         .select(`
           id,
@@ -66,6 +80,7 @@ export default function ReportsPage() {
         `)
         .order('changed_at', { ascending: false })
         .limit(50)
+      if (error) throw error
       return data ?? []
     },
   })
@@ -113,6 +128,16 @@ export default function ReportsPage() {
 
             {sessionsLoading ? (
               <div className="flex justify-center py-12"><Spinner className="h-8 w-8" /></div>
+            ) : isSessionsError ? (
+              <div className="p-4 bg-red-50 border border-red-200 rounded-2xl text-center space-y-2">
+                <AlertCircle size={24} className="text-red-500 mx-auto" />
+                <p className="font-semibold text-red-900 text-sm">Failed to load recent sessions</p>
+                <p className="text-xs text-red-600">{(sessionsError as any)?.message || 'Database query error'}</p>
+                <Button size="sm" variant="outline" onClick={() => refetchSessions()}>
+                  <RefreshCw size={14} className="mr-1.5" />
+                  Retry
+                </Button>
+              </div>
             ) : sessions?.length === 0 ? (
               <p className="text-center text-gray-400 py-8 text-sm">No submitted sessions yet</p>
             ) : (
@@ -163,6 +188,16 @@ export default function ReportsPage() {
 
             {auditLoading ? (
               <div className="flex justify-center py-12"><Spinner className="h-8 w-8" /></div>
+            ) : isAuditError ? (
+              <div className="p-4 bg-red-50 border border-red-200 rounded-2xl text-center space-y-2">
+                <AlertCircle size={24} className="text-red-500 mx-auto" />
+                <p className="font-semibold text-red-900 text-sm">Failed to load audit logs</p>
+                <p className="text-xs text-red-600">{(auditError as any)?.message || 'Database query error'}</p>
+                <Button size="sm" variant="outline" onClick={() => refetchAudit()}>
+                  <RefreshCw size={14} className="mr-1.5" />
+                  Retry
+                </Button>
+              </div>
             ) : auditLogs?.length === 0 ? (
               <p className="text-center text-gray-400 py-8 text-sm">No audit logs recorded yet</p>
             ) : (

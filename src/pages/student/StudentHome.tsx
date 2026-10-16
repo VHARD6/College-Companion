@@ -4,9 +4,10 @@ import { supabase } from '../../lib/supabase'
 import TopBar from '../../components/ui/TopBar'
 import SubjectCard from '../../components/student/SubjectCard'
 import Spinner from '../../components/ui/Spinner'
+import Button from '../../components/ui/Button'
 import { useStudentAttendance } from '../../hooks/useStudentAttendance'
 import { calcPercent } from '../../lib/attendance'
-import { BookOpen, Calendar } from 'lucide-react'
+import { BookOpen, Calendar, AlertCircle, RefreshCw } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 const DEFAULT_THRESHOLD = 75
@@ -15,30 +16,55 @@ export default function StudentHome() {
   const { profile } = useAuth()
 
   // Get the student row for the current user
-  const { data: student } = useQuery({
+  const {
+    data: student,
+    isLoading: isStudentLoading,
+    isError: isStudentError,
+    error: studentError,
+    refetch: refetchStudent,
+  } = useQuery({
     queryKey: ['my-student', profile?.id],
     enabled: !!profile,
     queryFn: async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('students')
         .select('*')
         .eq('user_id', profile!.id)
         .maybeSingle()
+      if (error) throw error
       return data
     },
   })
 
   // Fetch policy for threshold
-  const { data: policy } = useQuery({
+  const {
+    data: policy,
+    isError: isPolicyError,
+    error: policyError,
+  } = useQuery({
     queryKey: ['policy'],
     queryFn: async () => {
-      const { data } = await supabase.from('attendance_policy').select('*').single()
+      const { data, error } = await supabase.from('attendance_policy').select('*').single()
+      if (error) throw error
       return data
     },
   })
 
   const threshold = policy?.threshold_percent ?? DEFAULT_THRESHOLD
-  const { data: summaries, isLoading } = useStudentAttendance(student?.id, threshold)
+  const {
+    data: summaries,
+    isLoading: isSummariesLoading,
+    isError: isSummariesError,
+    error: summariesError,
+    refetch: refetchSummaries,
+  } = useStudentAttendance(student?.id, threshold)
+
+  const isLoading = isStudentLoading || isSummariesLoading
+  const hasError = isStudentError || isPolicyError || isSummariesError
+  const errorMessage =
+    (studentError as any)?.message ||
+    (policyError as any)?.message ||
+    (summariesError as any)?.message
 
   // Overall attendance = total attended / total held across all subjects
   const overallPercent = summaries && summaries.length > 0
@@ -91,7 +117,24 @@ export default function StudentHome() {
             <div className="flex justify-center py-12">
               <Spinner className="h-8 w-8" />
             </div>
-          ) : !student ? (
+          ) : hasError ? (
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-center space-y-2">
+              <AlertCircle size={24} className="text-red-500 mx-auto" />
+              <p className="font-semibold text-red-900 text-sm">Failed to load attendance records</p>
+              <p className="text-xs text-red-600">{errorMessage || 'Database query failure'}</p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  refetchStudent()
+                  refetchSummaries()
+                }}
+              >
+                <RefreshCw size={14} className="mr-1.5" />
+                Retry
+              </Button>
+            </div>
+          ) : !student || !student.class_id ? (
             <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 text-center space-y-1.5">
               <p className="font-semibold text-blue-900 text-sm">Enrollment Pending</p>
               <p className="text-xs text-blue-700 leading-relaxed">
@@ -100,7 +143,7 @@ export default function StudentHome() {
               </p>
             </div>
           ) : summaries?.length === 0 ? (
-            <p className="text-center text-gray-400 py-12">No subjects assigned yet</p>
+            <p className="text-center text-gray-400 py-12">No subjects assigned to your class yet</p>
           ) : (
             <div className="space-y-3">
               {summaries?.map(s => (

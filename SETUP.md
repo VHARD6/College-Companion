@@ -51,16 +51,38 @@ In your Supabase dashboard:
 8. Click **New Query** again.
 9. Open and paste the contents of `supabase/migrations/004_fix_handle_new_user_trigger.sql` and click **Run**.
    - *This permanently resolves `relation "profiles" does not exist` by explicitly setting `search_path = public, pg_temp` and reconciles any existing users who were missing profiles.*
-10. (Optional) Run `supabase/seed.sql` to insert sample Computer Science department, class divisions, batches, and subjects.
-
-### Important: Supabase Auth Email Settings
-By default, free Supabase projects use a built-in email service capped at **3 emails per hour**.
-- **For instant testing/development**: In Supabase Dashboard → **Authentication** → **Providers** → **Email**, toggle **"Confirm email" OFF**. New students will register and receive an active session immediately without consuming the email quota.
-- **For production email confirmation**: Keep **"Confirm email" ON** and configure a custom SMTP provider (e.g. Resend, SendGrid, Amazon SES) in **Project Settings** → **Authentication** → **SMTP Settings** to remove rate limits.
+10. Click **New Query** again.
+11. Open and paste the contents of `supabase/migrations/005_harden_rls_and_corrections.sql` and click **Run**.
+   - *This establishes student self-registration verification, audit constraints, and correction window policies.*
+12. Click **New Query** again.
+13. Open and paste the contents of `supabase/migrations/006_scope_data_access.sql` and click **Run**.
+   - *This hardens security across the platform:*
+     - Restricts student visibility strictly to their own enrolled attendance and class schedules.
+     - Scopes professor access to authorized teaching assignments and assigned rosters only.
+     - Enforces audit log immutability via `prevent_audit_log_modification` trigger (revoking `UPDATE` and `DELETE`).
+     - Adds `protect_session_submission` trigger preventing reopened sessions or timestamp manipulation.
+     - Deploys atomic SECURITY DEFINER RPC functions: `submit_attendance_session`, `correct_attendance_records`, and `save_draft_session`.
+14. (Optional) Run `supabase/seed.sql` to insert sample Computer Science department, class divisions, batches, and subjects.
 
 ---
 
-## 5. Create Your First Admin User
+## 5. Deploy the Admin User Provisioning Edge Function
+
+Admin user creation and CSV batch imports run via the server-side Edge Function `admin-create-user`.
+
+1. Install the [Supabase CLI](https://supabase.com/docs/guides/cli) or use the Supabase Dashboard:
+   - In Supabase Dashboard, navigate to **Edge Functions** → **Deploy a new function**.
+   - Or deploy via CLI:
+     ```bash
+     supabase functions deploy admin-create-user --project-ref your-project-ref
+     ```
+2. In Supabase Dashboard → **Edge Functions** → **Secrets**, ensure the following secret is active:
+   - `SUPABASE_SERVICE_ROLE_KEY`: Your project's service role secret (found in **Project Settings** → **API**).
+   *(Note: The `admin-create-user` function uses this secret to safely invoke `auth.admin.createUser` and roll back auth accounts if profile/student/professor record insertion fails).*
+
+---
+
+## 6. Create Your First Admin User
 
 Because Supabase Auth handles authentication, create your primary Admin account:
 
@@ -154,7 +176,23 @@ Log in with your Admin credentials to configure your college structure:
 
 ---
 
-## 9. Building for Production
+## 9. Automated Testing
+
+The project includes 70 automated tests covering authentication normalization, portal boundaries, attendance recovery formulas, session submission atomicity, and audit immutability.
+
+```bash
+# Run the complete test suite
+cmd /c npm test
+```
+
+Tests run with Node.js 22+ native test runner (`node --experimental-strip-types`):
+- `tests/auth.test.ts`: 30 tests (email sanitation, validation, auth diagnostics, portal route protection).
+- `tests/attendance.test.ts`: 20 tests (percentages, skippable formulas, recovery needed, status badges).
+- `tests/security.test.ts`: 20 tests (RLS isolation, audit protection, rollback simulation, idempotency).
+
+---
+
+## 10. Building for Production
 
 ```bash
 cmd /c npm run build
@@ -164,7 +202,7 @@ The output bundle is generated in `dist/` ready to deploy to Vercel, Netlify, or
 
 ---
 
-## 10. Building and Installing the Android APK
+## 11. Building and Installing the Android APK
 
 The project is packaged for Android using **Capacitor 8**.
 
@@ -182,14 +220,14 @@ The project is packaged for Android using **Capacitor 8**.
 ### Build Commands
 
 ```bash
-# 1. Sync web changes into Android project:
-npm run android:sync
+# 1. Compile web assets:
+cmd /c npm run build
 
-# 2. Build debug APK directly from command line:
-npm run android:build
+# 2. Sync web changes into Android native project:
+npx cap sync android
 
-# 3. Open in Android Studio:
-npm run android:open
+# 3. Build debug APK directly from command line:
+cmd /c "cd /d c:\Games\ATTENDANCE\android && gradlew.bat assembleDebug"
 ```
 
 ### Generated APK Location
@@ -200,16 +238,33 @@ android\app\build\outputs\apk\debug\app-debug.apk
 
 ### Installing on an Android Device
 
-#### Option A: Via ADB (USB Debugging)
-1. Enable **Developer Options** and **USB Debugging** on your Android phone.
-2. Connect your device via USB.
-3. Run:
+#### Option A: Wireless ADB (Recommended)
+1. Ensure your Android device and PC are connected to the same Wi-Fi network.
+2. Enable **Developer Options** → **Wireless Debugging** on the device.
+3. Pair/connect via ADB:
+   ```bash
+   adb connect <device-ip>:<port>
+   # or verify existing wireless connection:
+   adb devices
+   ```
+4. Install the fresh APK:
+   ```bash
+   adb install -r android\app\build\outputs\apk\debug\app-debug.apk
+   ```
+5. Launch the application:
+   ```bash
+   adb shell am start -n com.collegecompanion.app/.MainActivity
+   ```
+
+#### Option B: Via USB Debugging
+1. Connect device via USB cable with USB Debugging enabled.
+2. Run:
    ```bash
    adb install -r android\app\build\outputs\apk\debug\app-debug.apk
    ```
 
-#### Option B: Direct APK File Transfer
-1. Copy `app-debug.apk` to your phone via USB cable, Google Drive, or messaging app.
+#### Option C: Direct APK File Transfer
+1. Copy `app-debug.apk` to your phone via USB cable, Google Drive, or cloud storage.
 2. Locate the APK file in your phone's file manager and tap it to install.
 3. If prompted, grant permission to **"Install unknown apps"** in your phone's Settings.
 
@@ -217,3 +272,4 @@ android\app\build\outputs\apk\debug\app-debug.apk
 - **`invalid source release: 21`**: Ensure Gradle uses JDK 21. Verify `org.gradle.java.home` in `android/gradle.properties`.
 - **SDK location not found**: Verify `android/local.properties` contains `sdk.dir` pointing to your Android SDK folder.
 - **Hardware Back Button**: The app is configured with `@capacitor/app` to exit gracefully from root views (`/login`, `/student`, `/professor`, `/admin`) and navigate back across child pages.
+

@@ -6,6 +6,8 @@ import type { SubjectAttendanceSummary } from '../types'
 /**
  * Fetches all attendance data for the current student
  * and returns per-subject summaries.
+ * Throws explicit errors so consumers can distinguish network/backend failures
+ * from empty enrollment or 0 classes held.
  */
 export function useStudentAttendance(studentId: number | undefined, threshold: number) {
   return useQuery({
@@ -15,20 +17,22 @@ export function useStudentAttendance(studentId: number | undefined, threshold: n
       if (!studentId) return []
 
       // 1. Get the student's class to find their subjects
-      const { data: studentData } = await supabase
+      const { data: studentData, error: sErr } = await supabase
         .from('students')
         .select('class_id, batch_id')
         .eq('id', studentId)
         .maybeSingle()
 
+      if (sErr) throw sErr
       if (!studentData || !studentData.class_id) return []
 
       // 2. Get all subjects linked to the student's class via teaching assignments
-      const { data: assignments } = await supabase
+      const { data: assignments, error: aErr } = await supabase
         .from('teaching_assignments')
         .select('id, subjects(*), batch_id')
         .eq('class_id', studentData.class_id)
 
+      if (aErr) throw aErr
       if (!assignments || assignments.length === 0) return []
 
       // Filter out practical assignments that belong to a different batch
@@ -43,11 +47,13 @@ export function useStudentAttendance(studentId: number | undefined, threshold: n
         const subject = assignment.subjects as any
 
         // Get submitted sessions for this assignment
-        const { data: sessions, count: held } = await supabase
+        const { data: sessions, count: held, error: sessErr } = await supabase
           .from('sessions')
           .select('id', { count: 'exact' })
           .eq('teaching_assignment_id', assignment.id)
           .eq('status', 'submitted')
+
+        if (sessErr) throw sessErr
 
         const h = held ?? sessions?.length ?? 0
         let a = 0
@@ -55,13 +61,14 @@ export function useStudentAttendance(studentId: number | undefined, threshold: n
         // Only query attendance_records if at least one session has been held
         if (h > 0 && sessions && sessions.length > 0) {
           const sessionIds = sessions.map(s => s.id)
-          const { count: attended } = await supabase
+          const { count: attended, error: arErr } = await supabase
             .from('attendance_records')
             .select('id', { count: 'exact' })
             .eq('student_id', studentId)
             .eq('status', 'present')
             .in('session_id', sessionIds)
 
+          if (arErr) throw arErr
           a = attended ?? 0
         }
 

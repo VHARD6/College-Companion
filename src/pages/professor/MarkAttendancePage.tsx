@@ -11,7 +11,7 @@ import Spinner from '../../components/ui/Spinner'
 import Badge from '../../components/ui/Badge'
 import { todayISO, formatDate } from '../../lib/utils'
 import toast from 'react-hot-toast'
-import { Search, Lock, AlertTriangle } from 'lucide-react'
+import { Search, Lock, AlertTriangle, AlertCircle, RefreshCw } from 'lucide-react'
 import type { AttendanceStatus, SessionType } from '../../types'
 
 export default function MarkAttendancePage() {
@@ -41,13 +41,20 @@ export default function MarkAttendancePage() {
   const { data: policy } = useQuery({
     queryKey: ['policy'],
     queryFn: async () => {
-      const { data } = await supabase.from('attendance_policy').select('*').single()
+      const { data, error } = await supabase.from('attendance_policy').select('*').single()
+      if (error) throw error
       return data
     },
   })
 
   // Fetch existing session if sessionId was provided or found
-  const { data: existingSession, isLoading: sessionLoading } = useQuery({
+  const {
+    data: existingSession,
+    isLoading: sessionLoading,
+    isError: isSessionError,
+    error: sessionError,
+    refetch: refetchSession,
+  } = useQuery({
     queryKey: ['session', sessionId],
     enabled: !!sessionId,
     queryFn: async () => {
@@ -67,7 +74,12 @@ export default function MarkAttendancePage() {
   })
 
   // Fetch teaching assignment if no existing session yet
-  const { data: assignmentData } = useQuery({
+  const {
+    data: assignmentData,
+    isError: isAssignmentError,
+    error: assignmentError,
+    refetch: refetchAssignment,
+  } = useQuery({
     queryKey: ['assignment', assignmentId],
     enabled: !!assignmentId,
     queryFn: async () => {
@@ -104,7 +116,13 @@ export default function MarkAttendancePage() {
   })
 
   // Fetch enrolled students for this class & batch
-  const { data: students, isLoading: studentsLoading } = useQuery({
+  const {
+    data: students,
+    isLoading: studentsLoading,
+    isError: isStudentsError,
+    error: studentsError,
+    refetch: refetchStudents,
+  } = useQuery({
     queryKey: ['class-students', classId, batchId],
     enabled: !!classId,
     queryFn: async () => {
@@ -168,13 +186,15 @@ export default function MarkAttendancePage() {
     )
   }, [students, search])
 
-  // Status checks
+  // Status checks and correction window calculation
   const isSubmitted = existingSession?.status === 'submitted'
-  const submittedAt = existingSession?.submitted_at ? new Date(existingSession.submitted_at) : null
   const correctionWindowHours = policy?.correction_window_hrs ?? 24
-  const isWithinCorrectionWindow = submittedAt
-    ? (Date.now() - submittedAt.getTime()) <= correctionWindowHours * 3600 * 1000
-    : true
+
+  const isWithinCorrectionWindow = useMemo(() => {
+    if (!existingSession?.submitted_at) return true
+    const submittedMs = new Date(existingSession.submitted_at).getTime()
+    return Date.now() - submittedMs <= correctionWindowHours * 3600 * 1000
+  }, [existingSession?.submitted_at, correctionWindowHours])
 
   const isLocked = isSubmitted && !isWithinCorrectionWindow
 
@@ -191,114 +211,88 @@ export default function MarkAttendancePage() {
     setAttendance(updated)
   }
 
-  // Save / Submit Mutation
+  // Atomic Save / Submit Mutation via Database RPC functions
   const saveMutation = useMutation({
     mutationFn: async ({ submitFinal }: { submitFinal: boolean }) => {
       if (!profile || !assignmentId) throw new Error('Missing profile or assignment information')
 
-      if (submitFinal && isSubmitted && !editReason.trim()) {
-        throw new Error('A reason is mandatory for modifying submitted attendance.')
+      // Case A: Save Draft (Atomic RPC)
+      if (!submitFinal) {
+        const recordsPayload = (students ?? []).map(student => ({
+          student_id: student.id,
+          status: attendance[student.id] ?? 'present',
+        }))
+
+        const { data: rpcData, error: rpcErr } = await supabase.rpc('save_draft_session', {
+          p_session_id: sessionId,
+          p_teaching_assignment_id: assignmentId,
+          p_date: sessionDate,
+          p_session_type: sessionType,
+          p_records: recordsPayload,
+        })
+
+        if (rpcErr) throw rpcErr
+        return { submitFinal: false, sessionId: rpcData?.session_id }
       }
 
-      let activeSessionId = sessionId
+      // Case B: Initial Final Submission (Atomic RPC)
+      if (!isSubmitted) {
+        const recordsPayload = (students ?? []).map(student => ({
+          student_id: student.id,
+          status: attendance[student.id] ?? 'present',
+        }))
 
-      // 1. Create session if it doesn't exist
-      if (!activeSessionId) {
-        const { data: newSession, error: sErr } = await supabase
-          .from('sessions')
-          .insert({
-            teaching_assignment_id: assignmentId,
-            date: sessionDate,
-            session_type: sessionType,
-            status: submitFinal ? 'submitted' : 'draft',
-            submitted_at: submitFinal ? new Date().toISOString() : null,
-            submitted_by: submitFinal ? profile.id : null,
-          })
-          .select('id')
-          .single()
+        const { data: rpcData, error: rpcErr } = await supabase.rpc('submit_attendance_session', {
+          p_session_id: sessionId,
+          p_teaching_assignment_id: assignmentId,
+          p_date: sessionDate,
+          p_session_type: sessionType,
+          p_records: recordsPayload,
+        })
 
-        if (sErr) throw sErr
-        activeSessionId = newSession.id
-        setSessionId(newSession.id)
-      } else {
-        // Update existing session
-        const updatePayload: any = {
-          date: sessionDate,
-          session_type: sessionType,
-        }
-        if (submitFinal && !isSubmitted) {
-          updatePayload.status = 'submitted'
-          updatePayload.submitted_at = new Date().toISOString()
-          updatePayload.submitted_by = profile.id
-        }
-
-        const { error: sUpdateErr } = await supabase
-          .from('sessions')
-          .update(updatePayload)
-          .eq('id', activeSessionId)
-
-        if (sUpdateErr) throw sUpdateErr
+        if (rpcErr) throw rpcErr
+        return { submitFinal: true, sessionId: rpcData?.session_id }
       }
 
-      // 2. Prepare attendance records
-      const recordsToUpsert = (students ?? []).map(student => ({
-        session_id: activeSessionId!,
-        student_id: student.id,
-        status: attendance[student.id] ?? 'present',
-        marked_by: profile.id,
-        marked_at: new Date().toISOString(),
-      }))
+      // Case C: Modifying an Already Submitted Session (Atomic Correction RPC)
+      if (!editReason.trim()) {
+        throw new Error('A mandatory reason is required for attendance corrections.')
+      }
 
-      // Check existing records for audit log diff
       const existingMap = new Map(existingRecords?.map(r => [r.student_id, r]) ?? [])
+      const changes: Array<{ student_id: number; new_status: AttendanceStatus }> = []
 
-      const { data: savedRecords, error: rErr } = await supabase
-        .from('attendance_records')
-        .upsert(recordsToUpsert, { onConflict: 'session_id,student_id' })
-        .select()
-
-      if (rErr) throw rErr
-
-      // 3. Write audit log entries
-      if (savedRecords && savedRecords.length > 0) {
-        if (!isSubmitted && submitFinal) {
-          // First submission audit entries
-          const initialLogs = savedRecords.map(r => ({
-            record_id: r.id,
-            old_status: null,
-            new_status: r.status,
-            changed_by: profile.id,
-            reason: 'Initial submission',
-          }))
-          await supabase.from('attendance_audit_log').insert(initialLogs)
-        } else if (isSubmitted) {
-          // Edit changes audit entries
-          const editLogs: any[] = []
-          savedRecords.forEach(r => {
-            const previous = existingMap.get(r.student_id)
-            if (previous && previous.status !== r.status) {
-              editLogs.push({
-                record_id: r.id,
-                old_status: previous.status,
-                new_status: r.status,
-                changed_by: profile.id,
-                reason: editReason.trim(),
-              })
-            }
+      students?.forEach(student => {
+        const currentVal = attendance[student.id] ?? 'present'
+        const previousVal = existingMap.get(student.id)?.status
+        if (previousVal && previousVal !== currentVal) {
+          changes.push({
+            student_id: student.id,
+            new_status: currentVal,
           })
-          if (editLogs.length > 0) {
-            await supabase.from('attendance_audit_log').insert(editLogs)
-          }
         }
+      })
+
+      if (changes.length === 0) {
+        throw new Error('No status changes detected to record.')
       }
 
-      return { submitFinal }
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('correct_attendance_records', {
+        p_session_id: sessionId!,
+        p_changes: changes,
+        p_reason: editReason.trim(),
+      })
+
+      if (rpcErr) throw rpcErr
+      return { submitFinal: true, sessionId, changesApplied: rpcData?.changes_applied }
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
       queryClient.invalidateQueries({ queryKey: ['attendance-records', sessionId] })
       queryClient.invalidateQueries({ queryKey: ['professor-today'] })
       queryClient.invalidateQueries({ queryKey: ['student-attendance'] })
+      queryClient.invalidateQueries({ queryKey: ['admin-audit-logs'] })
+      queryClient.invalidateQueries({ queryKey: ['admin-submitted-sessions'] })
       toast.success(data.submitFinal ? 'Attendance successfully submitted!' : 'Draft saved.')
       navigate('/professor')
     },
@@ -322,6 +316,11 @@ export default function MarkAttendancePage() {
   const cls = (currentAssignment as any)?.classes
   const batch = (currentAssignment as any)?.batches
   const isLoading = sessionLoading || studentsLoading
+  const hasError = isSessionError || isAssignmentError || isStudentsError
+  const errorMessage =
+    (sessionError as any)?.message ||
+    (assignmentError as any)?.message ||
+    (studentsError as any)?.message
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col pb-24">
@@ -367,8 +366,31 @@ export default function MarkAttendancePage() {
       </div>
 
       <div className="p-4 space-y-4 max-w-lg mx-auto w-full flex-1">
+        {/* Error State Banner */}
+        {hasError && (
+          <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-center space-y-2">
+            <AlertCircle size={24} className="text-red-500 mx-auto" />
+            <p className="text-sm font-semibold text-red-900">Failed to load session details</p>
+            <p className="text-xs text-red-600">{errorMessage || 'Database connection error'}</p>
+            <div className="flex gap-2 justify-center pt-1">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  refetchSession()
+                  refetchAssignment()
+                  refetchStudents()
+                }}
+              >
+                <RefreshCw size={14} className="mr-1.5" />
+                Retry
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Session Details / Date Picker */}
-        {!isSubmitted && (
+        {!isSubmitted && !hasError && (
           <div className="bg-white rounded-2xl border border-gray-200 p-3 space-y-3">
             <div className="grid grid-cols-2 gap-2">
               <Input
@@ -395,7 +417,7 @@ export default function MarkAttendancePage() {
         )}
 
         {/* Locked / Correction Window Notice */}
-        {isSubmitted && (
+        {isSubmitted && !hasError && (
           <div className={`rounded-2xl p-4 border ${isLocked ? 'bg-red-50 border-red-200 text-red-800' : 'bg-amber-50 border-amber-200 text-amber-900'}`}>
             <div className="flex items-start gap-2">
               {isLocked ? <Lock size={20} className="text-red-600 shrink-0 mt-0.5" /> : <AlertTriangle size={20} className="text-amber-600 shrink-0 mt-0.5" />}
@@ -426,7 +448,7 @@ export default function MarkAttendancePage() {
         )}
 
         {/* Search & Bulk Toggle Controls */}
-        {!isLocked && (
+        {!isLocked && !hasError && (
           <div className="space-y-2">
             <div className="relative">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -459,9 +481,9 @@ export default function MarkAttendancePage() {
         {/* Student Roster List */}
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner className="h-8 w-8" /></div>
-        ) : filteredStudents.length === 0 ? (
+        ) : hasError ? null : filteredStudents.length === 0 ? (
           <div className="text-center py-12 text-gray-400 text-sm">
-            No matching students found
+            No matching students found for this class division
           </div>
         ) : (
           <div className="space-y-2">
@@ -497,7 +519,7 @@ export default function MarkAttendancePage() {
       </div>
 
       {/* Fixed Bottom Action Bar */}
-      {!isLocked && (
+      {!isLocked && !hasError && (
         <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-3 z-20">
           <div className="max-w-lg mx-auto flex gap-3">
             {!isSubmitted && (
