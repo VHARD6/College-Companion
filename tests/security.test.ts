@@ -329,8 +329,8 @@ describe('Security & Attendance Integrity Hardening Test Suite', () => {
     })
 
     it('22. professor cannot read student roster for classes outside their teaching assignments', () => {
-      // Simulating students_prof_roster_read:
-      // get_my_role() = 'professor' AND can_access_student_roster(class_id, batch_id) = TRUE
+      // Simulating students_prof_roster_read with hardened can_access_student_roster:
+      // ta.batch_id IS NULL OR (p_batch_id IS NOT NULL AND ta.batch_id = p_batch_id)
       const profId = 5
       const assignments = [
         { id: 1, professor_id: profId, class_id: 10, batch_id: null }, // Theory for Class 10
@@ -340,11 +340,11 @@ describe('Security & Attendance Integrity Hardening Test Suite', () => {
         return assignments.some(
           ta => ta.professor_id === profId &&
                 ta.class_id === classId &&
-                (ta.batch_id === null || batchId === null || ta.batch_id === batchId)
+                (ta.batch_id === null || (batchId !== null && ta.batch_id === batchId))
         )
       }
 
-      // Student in Class 10
+      // Student in Class 10 (both with and without batch assignment can access whole-class lecture)
       assert.equal(canAccessStudentRoster(10, null), true)
       assert.equal(canAccessStudentRoster(10, 1), true)
 
@@ -353,7 +353,9 @@ describe('Security & Attendance Integrity Hardening Test Suite', () => {
       assert.equal(canAccessStudentRoster(11, 1), false)
     })
 
-    it('23. professor assigned to a specific batch cannot access roster of other batches in practicals', () => {
+    it('23. professor assigned to a specific batch cannot access roster of other batches or unassigned students', () => {
+      // Simulating hardened can_access_student_roster:
+      // Enforces that a batch-specific assignment (ta.batch_id = 1) NEVER matches a student with batch_id = null
       const profId = 5
       const assignments = [
         { id: 2, professor_id: profId, class_id: 10, batch_id: 1 }, // Lab for Class 10 Batch 1 ONLY
@@ -363,7 +365,7 @@ describe('Security & Attendance Integrity Hardening Test Suite', () => {
         return assignments.some(
           ta => ta.professor_id === profId &&
                 ta.class_id === classId &&
-                (ta.batch_id === null || batchId === null || ta.batch_id === batchId)
+                (ta.batch_id === null || (batchId !== null && ta.batch_id === batchId))
         )
       }
 
@@ -372,6 +374,9 @@ describe('Security & Attendance Integrity Hardening Test Suite', () => {
 
       // Batch 2 student (unauthorized)
       assert.equal(canAccessStudentRoster(10, 2), false)
+
+      // Unassigned student with batch_id = null (unauthorized — strictly excluded from batch 1 practical)
+      assert.equal(canAccessStudentRoster(10, null), false)
 
       // Different class student (unauthorized)
       assert.equal(canAccessStudentRoster(12, 1), false)
@@ -509,6 +514,245 @@ describe('Security & Attendance Integrity Hardening Test Suite', () => {
 
       // 100% threshold where 1 class was missed
       assert.equal(calcNeeded(9, 10, 100), Infinity)
+    })
+  })
+
+  // ─── PART 5: End-to-End Provisioning, Compensating Rollback & Reconciliation ─
+  describe('5. End-to-End Provisioning, Compensating Rollback & Reconciliation', () => {
+    it('28. orphan profile reconciliation strictly enforces safe default role student and ignores user_metadata', () => {
+      // Simulating Migration 008 safe orphan reconciliation logic
+      const existingProfiles = new Map<string, { id: string; name: string; role: string; is_active: boolean }>([
+        ['admin-1', { id: 'admin-1', name: 'Real Admin', role: 'admin', is_active: true }],
+        ['disabled-stud', { id: 'disabled-stud', name: 'Deactivated Student', role: 'student', is_active: false }],
+      ])
+
+      const authUsers = [
+        // Existing admin (must remain untouched)
+        { id: 'admin-1', email: 'admin@college.edu', raw_user_meta_data: { role: 'admin', name: 'Real Admin' } },
+        // Existing deactivated student (must remain deactivated)
+        { id: 'disabled-stud', email: 'disabled@college.edu', raw_user_meta_data: { role: 'student', name: 'Deactivated Student' } },
+        // Orphan user with malicious role escalation attempt in metadata
+        { id: 'orphan-attacker', email: 'hacker@gmail.com', raw_user_meta_data: { role: 'admin', name: 'Attacker' } },
+        // Orphan user with normal student metadata
+        { id: 'orphan-student', email: 'newstud@gmail.com', raw_user_meta_data: { name: 'New Student' } },
+      ]
+
+      // Migration 008 logic:
+      // INSERT ... SELECT u.id, name, 'student', true FROM auth.users WHERE p.id IS NULL ON CONFLICT (id) DO NOTHING
+      for (const u of authUsers) {
+        if (!existingProfiles.has(u.id)) {
+          // Hardcoded safe default 'student', completely ignoring raw_user_meta_data->>'role'
+          existingProfiles.set(u.id, {
+            id: u.id,
+            name: (u.raw_user_meta_data as any)?.name ?? 'User',
+            role: 'student',
+            is_active: true,
+          })
+        }
+      }
+
+      // Assertions
+      assert.equal(existingProfiles.get('orphan-attacker')?.role, 'student') // ESCALATION BLOCKED
+      assert.equal(existingProfiles.get('orphan-student')?.role, 'student')
+      assert.equal(existingProfiles.get('admin-1')?.role, 'admin')          // EXISTING ADMIN UNTOUCHED
+      assert.equal(existingProfiles.get('disabled-stud')?.is_active, false)  // EXISTING STATUS UNTOUCHED
+    })
+
+    it('29. Edge Function provisioning validates roles, departments, roll numbers, and caller authority', () => {
+      const simulateAdminCreateUser = (
+        caller: { id: string; role: string; is_active: boolean },
+        payload: { name: string; email: string; password: string; role: string; rollNo?: string; departmentId?: number }
+      ) => {
+        // Step 1: Caller authentication & role verification
+        if (!caller || caller.role !== 'admin' || !caller.is_active) {
+          throw new Error('Forbidden: Only active administrators can provision user accounts.')
+        }
+
+        // Step 2: Role validation
+        if (!['student', 'professor', 'admin'].includes(payload.role)) {
+          throw new Error(`Invalid role: ${payload.role}`)
+        }
+
+        // Step 3: Role-specific requirements
+        if (payload.role === 'student' && !payload.rollNo?.trim()) {
+          throw new Error('Roll number is required when creating a student account.')
+        }
+
+        if (payload.role === 'professor' && !payload.departmentId) {
+          throw new Error('Department is required when creating a professor account.')
+        }
+
+        return { success: true, createdRole: payload.role }
+      }
+
+      const activeAdmin = { id: 'adm-1', role: 'admin', is_active: true }
+      const inactiveAdmin = { id: 'adm-2', role: 'admin', is_active: false }
+      const studentCaller = { id: 'std-1', role: 'student', is_active: true }
+      const profCaller = { id: 'prf-1', role: 'professor', is_active: true }
+
+      // 1. Admin creates professor with department -> SUCCESS
+      const profRes = simulateAdminCreateUser(activeAdmin, {
+        name: 'Dr. Sharma',
+        email: 'sharma@college.edu',
+        password: 'password123',
+        role: 'professor',
+        departmentId: 1,
+      })
+      assert.equal(profRes.success, true)
+      assert.equal(profRes.createdRole, 'professor')
+
+      // 2. Admin creates professor WITHOUT department -> REJECTED
+      assert.throws(
+        () => simulateAdminCreateUser(activeAdmin, {
+          name: 'Dr. NoDept',
+          email: 'nodept@college.edu',
+          password: 'password123',
+          role: 'professor',
+        }),
+        /Department is required when creating a professor account/i
+      )
+
+      // 3. Admin creates student with roll number -> SUCCESS
+      const studRes = simulateAdminCreateUser(activeAdmin, {
+        name: 'Amit Kumar',
+        email: 'amit@gmail.com',
+        password: 'password123',
+        role: 'student',
+        rollNo: 'CS-01',
+      })
+      assert.equal(studRes.success, true)
+      assert.equal(studRes.createdRole, 'student')
+
+      // 4. Admin creates student WITHOUT roll number -> REJECTED
+      assert.throws(
+        () => simulateAdminCreateUser(activeAdmin, {
+          name: 'NoRoll',
+          email: 'noroll@gmail.com',
+          password: 'password123',
+          role: 'student',
+        }),
+        /Roll number is required when creating a student account/i
+      )
+
+      // 5. Inactive admin cannot provision -> REJECTED
+      assert.throws(
+        () => simulateAdminCreateUser(inactiveAdmin, {
+          name: 'Test',
+          email: 'test@college.edu',
+          password: 'password123',
+          role: 'student',
+          rollNo: 'T-01',
+        }),
+        /Forbidden: Only active administrators/i
+      )
+
+      // 6. Student cannot provision -> REJECTED
+      assert.throws(
+        () => simulateAdminCreateUser(studentCaller, {
+          name: 'Test',
+          email: 'test@college.edu',
+          password: 'password123',
+          role: 'student',
+          rollNo: 'T-01',
+        }),
+        /Forbidden: Only active administrators/i
+      )
+
+      // 7. Professor cannot provision -> REJECTED
+      assert.throws(
+        () => simulateAdminCreateUser(profCaller, {
+          name: 'Test',
+          email: 'test@college.edu',
+          password: 'password123',
+          role: 'student',
+          rollNo: 'T-01',
+        }),
+        /Forbidden: Only active administrators/i
+      )
+    })
+
+    it('30. compensating rollback cleans up created Auth user when secondary table insertion fails', () => {
+      const authUsersDb = new Map<string, any>()
+      const studentsDb = new Map<string, any>()
+
+      const simulateProvisioningWithRollback = (
+        userId: string,
+        userData: { email: string; rollNo: string },
+        forceStudentFail: boolean
+      ) => {
+        // Step 1: Create auth user
+        authUsersDb.set(userId, userData)
+
+        try {
+          // Step 2: Insert into students table
+          if (forceStudentFail) {
+            throw new Error('duplicate key value violates unique constraint "students_roll_no_key"')
+          }
+          studentsDb.set(userId, { user_id: userId, roll_no: userData.rollNo })
+          return { success: true }
+        } catch (err: any) {
+          // Compensating rollback: delete user from auth
+          authUsersDb.delete(userId)
+          return { success: false, error: err.message }
+        }
+      }
+
+      // Case 1: Student insertion succeeds
+      const successRes = simulateProvisioningWithRollback(
+        'u-valid',
+        { email: 'valid@gmail.com', rollNo: 'CS-01' },
+        false
+      )
+      assert.equal(successRes.success, true)
+      assert.equal(authUsersDb.has('u-valid'), true)
+      assert.equal(studentsDb.has('u-valid'), true)
+
+      // Case 2: Student insertion fails (e.g. duplicate roll number) -> compensating rollback fires
+      const failRes = simulateProvisioningWithRollback(
+        'u-orphan-attempt',
+        { email: 'dup@gmail.com', rollNo: 'CS-01' },
+        true
+      )
+      assert.equal(failRes.success, false)
+      assert.match(failRes.error || '', /unique constraint/i)
+      // Verify NO orphaned auth user remains
+      assert.equal(authUsersDb.has('u-orphan-attempt'), false)
+      assert.equal(studentsDb.has('u-orphan-attempt'), false)
+    })
+
+    it('31. CSV bulk student import validates line-by-line, tracks counts, and does not abort batch', () => {
+      const csvLines = [
+        'name,email,roll_no,password,class,batch',
+        'Rahul Verma,rahul@gmail.com,CS-101,pass123,CS-A,Batch 1', // Valid
+        'Invalid User,not-an-email,CS-102,pass123,CS-A,Batch 1',   // Invalid email syntax
+        'No Roll,noroll@gmail.com,,pass123,CS-A,Batch 1',           // Missing roll number
+        'Priya Nair,priya@gmail.com,CS-103,pass123,CS-A,Batch 2',   // Valid
+      ]
+
+      let successCount = 0
+      let errorCount = 0
+      const errors: string[] = []
+      const provisioned: string[] = []
+
+      for (let i = 1; i < csvLines.length; i++) {
+        const [name, email, rollNo, password] = csvLines[i].split(',').map(s => s.trim())
+        try {
+          if (!name || !email || !password) throw new Error(`Missing required fields on line ${i}`)
+          if (!rollNo) throw new Error(`Missing roll number on line ${i}`)
+          if (!email.includes('@') || !email.includes('.')) throw new Error(`Invalid email on line ${i}`)
+          successCount++
+          provisioned.push(name)
+        } catch (err: any) {
+          errorCount++
+          errors.push(err.message)
+        }
+      }
+
+      assert.equal(successCount, 2)
+      assert.equal(errorCount, 2)
+      assert.deepEqual(provisioned, ['Rahul Verma', 'Priya Nair'])
+      assert.match(errors[0], /Invalid email on line 2/i)
+      assert.match(errors[1], /Missing roll number on line 3/i)
     })
   })
 })

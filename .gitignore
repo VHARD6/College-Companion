@@ -40,3 +40,6 @@ android/**/build/
 # Local signing credentials
 *.jks
 *.keystore
+
+# Supabase CLI temp files
+supabase/.temp/
