@@ -32,6 +32,7 @@ export interface Batch {
   id: number
   class_id: number
   name: string
+  classes?: Class
 }
 
 export interface Subject {
@@ -41,6 +42,7 @@ export interface Subject {
   department_id: number
   semester: number
   type: SubjectType
+  departments?: Department
 }
 
 export interface Professor {

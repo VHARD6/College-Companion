@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
@@ -9,15 +9,26 @@ import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Spinner from '../../components/ui/Spinner'
 import Badge from '../../components/ui/Badge'
+import Card from '../../components/ui/Card'
 import { todayISO, formatDate } from '../../lib/utils'
 import toast from 'react-hot-toast'
-import { Search, Lock, AlertTriangle, AlertCircle, RefreshCw } from 'lucide-react'
+import {
+  Search,
+  Lock,
+  AlertTriangle,
+  AlertCircle,
+  RefreshCw,
+  BookOpen,
+  ArrowLeftRight,
+  ChevronRight,
+  Users,
+} from 'lucide-react'
 import type { AttendanceStatus, SessionType } from '../../types'
 
 export default function MarkAttendancePage() {
   const { profile } = useAuth()
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const queryClient = useQueryClient()
 
   const rawAssignmentId = searchParams.get('assignmentId')
@@ -27,15 +38,65 @@ export default function MarkAttendancePage() {
   const [sessionId, setSessionId] = useState<number | null>(rawSessionId ? Number(rawSessionId) : null)
   const [sessionDate, setSessionDate] = useState<string>(todayISO())
   const [sessionType, setSessionType] = useState<SessionType>('lecture')
+  const [isSelectingAssignment, setIsSelectingAssignment] = useState<boolean>(!rawAssignmentId && !rawSessionId)
 
   // Search filter
   const [search, setSearch] = useState('')
 
-  // Map of studentId → AttendanceStatus
-  const [attendance, setAttendance] = useState<Record<number, AttendanceStatus>>({})
+  // Map of studentId → user override
+  const [attendanceOverrides, setAttendanceOverrides] = useState<Record<number, AttendanceStatus>>({})
 
   // Edit reason (required when session is submitted)
   const [editReason, setEditReason] = useState('')
+
+  // Fetch the professor row for the logged-in user
+  const {
+    data: professor,
+    isLoading: isProfLoading,
+    isError: isProfError,
+    error: profError,
+    refetch: refetchProf,
+  } = useQuery({
+    queryKey: ['my-professor', profile?.id],
+    enabled: !!profile && (profile.role === 'professor' || profile.role === 'admin'),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('professors')
+        .select('id, department_id')
+        .eq('user_id', profile!.id)
+        .maybeSingle()
+      if (error) throw error
+      return data
+    },
+  })
+
+  // Fetch all authorized teaching assignments for this professor
+  const {
+    data: professorAssignments,
+    isLoading: isAssignmentsLoading,
+    isError: isAssignmentsError,
+    error: assignmentsError,
+    refetch: refetchAssignments,
+  } = useQuery({
+    queryKey: ['professor-all-assignments', professor?.id],
+    enabled: !!professor?.id,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('teaching_assignments')
+        .select(`
+          id,
+          class_id,
+          batch_id,
+          subjects(id, name, type, code),
+          classes(id, name, semester),
+          batches(id, name)
+        `)
+        .eq('professor_id', professor!.id)
+        .order('id')
+      if (error) throw error
+      return data ?? []
+    },
+  })
 
   // Fetch attendance policy for correction window
   const { data: policy } = useQuery({
@@ -47,7 +108,7 @@ export default function MarkAttendancePage() {
     },
   })
 
-  // Fetch existing session if sessionId was provided or found
+  // Fetch existing session if sessionId was provided or discovered
   const {
     data: existingSession,
     isLoading: sessionLoading,
@@ -60,7 +121,7 @@ export default function MarkAttendancePage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from('sessions')
-        .select('*, teaching_assignments(id, class_id, batch_id, subjects(name, type, code), classes(name), batches(name))')
+        .select('*, teaching_assignments(id, class_id, batch_id, subjects(id, name, type, code), classes(id, name), batches(id, name))')
         .eq('id', sessionId!)
         .single()
       if (error) throw error
@@ -68,12 +129,13 @@ export default function MarkAttendancePage() {
         setSessionDate(data.date)
         setSessionType(data.session_type as SessionType)
         setAssignmentId(data.teaching_assignment_id)
+        setIsSelectingAssignment(false)
       }
       return data
     },
   })
 
-  // Fetch teaching assignment if no existing session yet
+  // Fetch teaching assignment details if no existing session yet
   const {
     data: assignmentData,
     isError: isAssignmentError,
@@ -85,7 +147,7 @@ export default function MarkAttendancePage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from('teaching_assignments')
-        .select('id, class_id, batch_id, subjects(name, type, code), classes(name), batches(name)')
+        .select('id, class_id, batch_id, subjects(id, name, type, code), classes(id, name), batches(id, name)')
         .eq('id', assignmentId!)
         .single()
       if (error) throw error
@@ -97,25 +159,38 @@ export default function MarkAttendancePage() {
   const classId = (currentAssignment as any)?.class_id
   const batchId = (currentAssignment as any)?.batch_id
 
-  // Check if session exists for this assignment + date if we don't have a sessionId yet
-  useQuery({
-    queryKey: ['check-session-date', assignmentId, sessionDate],
-    enabled: !!assignmentId && !sessionId,
-    queryFn: async () => {
-      const { data } = await supabase
+  // Auto-detect if a session already exists for this (assignmentId, sessionDate) when not loaded by rawSessionId
+  useEffect(() => {
+    if (!assignmentId || rawSessionId) return
+
+    let isMounted = true
+    async function checkDateSession() {
+      const { data, error } = await supabase
         .from('sessions')
-        .select('id')
+        .select('id, date, session_type, status')
         .eq('teaching_assignment_id', assignmentId!)
         .eq('date', sessionDate)
         .maybeSingle()
+
+      if (!isMounted) return
+      if (error) {
+        console.error('Failed to check session for date:', error)
+        return
+      }
+
       if (data?.id) {
         setSessionId(data.id)
+        setSessionType(data.session_type as SessionType)
+      } else {
+        setSessionId(null)
       }
-      return data
-    },
-  })
+    }
 
-  // Fetch enrolled students for this class & batch
+    checkDateSession()
+    return () => { isMounted = false }
+  }, [assignmentId, sessionDate, rawSessionId])
+
+  // Fetch enrolled students for this class & batch (enforcing strict batch boundary)
   const {
     data: students,
     isLoading: studentsLoading,
@@ -124,7 +199,7 @@ export default function MarkAttendancePage() {
     refetch: refetchStudents,
   } = useQuery({
     queryKey: ['class-students', classId, batchId],
-    enabled: !!classId,
+    enabled: !!classId && !isSelectingAssignment,
     queryFn: async () => {
       let query = supabase
         .from('students')
@@ -132,6 +207,7 @@ export default function MarkAttendancePage() {
         .eq('class_id', classId)
         .order('roll_no')
 
+      // Practical sessions are restricted strictly to that specific batch
       if (batchId) {
         query = query.eq('batch_id', batchId)
       }
@@ -145,35 +221,29 @@ export default function MarkAttendancePage() {
   // Fetch existing attendance records if session exists
   const { data: existingRecords } = useQuery({
     queryKey: ['attendance-records', sessionId],
-    enabled: !!sessionId,
+    enabled: !!sessionId && !isSelectingAssignment,
     queryFn: async () => {
       const { data, error } = await supabase
         .from('attendance_records')
         .select('*')
         .eq('session_id', sessionId!)
       if (error) throw error
-
-      if (data && data.length > 0) {
-        const loaded: Record<number, AttendanceStatus> = {}
-        data.forEach(r => {
-          loaded[r.student_id] = r.status as AttendanceStatus
-        })
-        setAttendance(loaded)
-      }
       return data ?? []
     },
   })
 
-  // Initialize all students to 'present' if new session and not initialized
-  const [hasInitialized, setHasInitialized] = useState(false)
-  if (students && students.length > 0 && !hasInitialized) {
-    if (!sessionId || !existingRecords || existingRecords.length === 0) {
-      const initial: Record<number, AttendanceStatus> = {}
-      students.forEach(s => { initial[s.id] = 'present' })
-      setAttendance(initial)
-    }
-    setHasInitialized(true)
-  }
+  // Compute active attendance by merging base (from existingRecords, defaulting to 'present') + user overrides
+  const attendance = useMemo<Record<number, AttendanceStatus>>(() => {
+    if (!students || students.length === 0) return {}
+    const base: Record<number, AttendanceStatus> = {}
+    const existingMap = new Map(existingRecords?.map(r => [r.student_id, r.status as AttendanceStatus]) ?? [])
+
+    students.forEach(s => {
+      base[s.id] = existingMap.get(s.id) ?? 'present'
+    })
+
+    return { ...base, ...attendanceOverrides }
+  }, [students, existingRecords, attendanceOverrides])
 
   // Filter students by search
   const filteredStudents = useMemo(() => {
@@ -189,26 +259,36 @@ export default function MarkAttendancePage() {
   // Status checks and correction window calculation
   const isSubmitted = existingSession?.status === 'submitted'
   const correctionWindowHours = policy?.correction_window_hrs ?? 24
+  const [mountTime] = useState(() => Date.now())
 
-  const isWithinCorrectionWindow = useMemo(() => {
-    if (!existingSession?.submitted_at) return true
-    const submittedMs = new Date(existingSession.submitted_at).getTime()
-    return Date.now() - submittedMs <= correctionWindowHours * 3600 * 1000
-  }, [existingSession?.submitted_at, correctionWindowHours])
+  const isWithinCorrectionWindow = !existingSession?.submitted_at
+    ? true
+    : mountTime - new Date(existingSession.submitted_at).getTime() <= correctionWindowHours * 3600 * 1000
 
   const isLocked = isSubmitted && !isWithinCorrectionWindow
 
   // Live counters
   const totalCount = students?.length ?? 0
   const presentCount = Object.values(attendance).filter(s => s === 'present').length
-  const absentCount = totalCount - presentCount
+  const absentCount = Math.max(0, totalCount - presentCount)
 
-  // Quick actions
+  // Quick bulk toggle actions
   const markAll = (status: AttendanceStatus) => {
-    if (isLocked) return
-    const updated: Record<number, AttendanceStatus> = {}
-    students?.forEach(s => { updated[s.id] = status })
-    setAttendance(updated)
+    if (isLocked || !students) return
+    const overrides: Record<number, AttendanceStatus> = {}
+    students.forEach(s => { overrides[s.id] = status })
+    setAttendanceOverrides(overrides)
+  }
+
+  // Switch assignment handler
+  const handleSelectAssignment = (newAssignmentId: number) => {
+    setAssignmentId(newAssignmentId)
+    setSessionId(null)
+    setAttendanceOverrides({})
+    setSearch('')
+    setEditReason('')
+    setIsSelectingAssignment(false)
+    setSearchParams({ assignmentId: String(newAssignmentId) })
   }
 
   // Atomic Save / Submit Mutation via Database RPC functions
@@ -287,6 +367,7 @@ export default function MarkAttendancePage() {
       return { submitFinal: true, sessionId, changesApplied: rpcData?.changes_applied }
     },
     onSuccess: (data) => {
+      setAttendanceOverrides({})
       queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
       queryClient.invalidateQueries({ queryKey: ['attendance-records', sessionId] })
       queryClient.invalidateQueries({ queryKey: ['professor-today'] })
@@ -322,22 +403,154 @@ export default function MarkAttendancePage() {
     (assignmentError as any)?.message ||
     (studentsError as any)?.message
 
-  return (
-    <div className="min-h-screen bg-gray-50 flex flex-col pb-24">
-      <TopBar title={isSubmitted ? 'Session Attendance' : 'Mark Attendance'} showBack />
+  // ───────────────────────────────────────────────────────────────────────────
+  // VIEW A: Assignment Selection Screen
+  // ───────────────────────────────────────────────────────────────────────────
+  if (!assignmentId || isSelectingAssignment) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col pb-16">
+        <TopBar
+          title="Select Subject & Class"
+          showBack={!!assignmentId}
+        />
 
-      {/* Sticky Sub-Header with Counters */}
-      <div className="sticky top-[53px] z-10 bg-white border-b border-gray-200 px-4 py-3 shadow-xs">
-        <div className="flex items-center justify-between gap-2 mb-2">
-          <div>
-            <h2 className="font-semibold text-gray-900 text-sm leading-tight truncate">
-              {subject?.name ?? 'Subject'}
-            </h2>
-            <p className="text-xs text-gray-500">
-              {cls?.name}{batch ? ` (${batch.name})` : ''} · {formatDate(sessionDate)}
+        <div className="p-4 max-w-lg mx-auto w-full space-y-4">
+          <div className="bg-gradient-to-r from-indigo-600 to-blue-600 rounded-2xl p-4 text-white shadow-xs">
+            <h2 className="text-lg font-bold">Mark Attendance</h2>
+            <p className="text-xs opacity-90 mt-1">
+              Select one of your authorized teaching assignments to take attendance or update drafts.
             </p>
           </div>
-          <div>
+
+          {isAssignmentsLoading || isProfLoading ? (
+            <div className="flex justify-center py-12">
+              <Spinner className="h-8 w-8" />
+            </div>
+          ) : isAssignmentsError || isProfError ? (
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-center space-y-2">
+              <AlertCircle size={24} className="text-red-500 mx-auto" />
+              <p className="font-semibold text-red-900 text-sm">Failed to load teaching assignments</p>
+              <p className="text-xs text-red-600">
+                {(assignmentsError as any)?.message || (profError as any)?.message || 'Database connection error'}
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  refetchProf()
+                  refetchAssignments()
+                }}
+              >
+                <RefreshCw size={14} className="mr-1.5" />
+                Retry
+              </Button>
+            </div>
+          ) : !professorAssignments || professorAssignments.length === 0 ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-center space-y-2">
+              <BookOpen size={32} className="text-amber-500 mx-auto" />
+              <h3 className="font-semibold text-amber-900 text-sm">No Teaching Assignments Found</h3>
+              <p className="text-xs text-amber-700 leading-relaxed">
+                You have not been assigned to any subjects or classes yet. Please contact your college administrator to configure your teaching assignments.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                Your Teaching Assignments ({professorAssignments.length})
+              </h3>
+              {professorAssignments.map(a => {
+                const sub = (a as any).subjects
+                const cl = (a as any).classes
+                const bt = (a as any).batches
+                const isSelected = a.id === assignmentId
+
+                return (
+                  <Card
+                    key={a.id}
+                    onClick={() => handleSelectAssignment(a.id)}
+                    className={`hover:shadow-md transition-all ${
+                      isSelected ? 'border-blue-500 ring-2 ring-blue-100 bg-blue-50/20' : 'border-gray-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className="font-semibold text-sm text-gray-900 truncate">
+                            {sub?.name ?? 'Subject'}
+                          </p>
+                          <span className="text-xs text-gray-400 font-mono">
+                            {sub?.code}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs text-gray-600">
+                          <span className="bg-gray-100 px-2 py-0.5 rounded-md font-medium">
+                            {cl?.name} (Sem {cl?.semester})
+                          </span>
+                          <span className={`px-2 py-0.5 rounded-md font-medium ${
+                            bt ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
+                          }`}>
+                            {bt ? `Batch: ${bt.name}` : 'Theory (All Batches)'}
+                          </span>
+                        </div>
+                      </div>
+                      <ChevronRight size={18} className="text-gray-400 shrink-0" />
+                    </div>
+                  </Card>
+                )
+              })}
+
+              {assignmentId && (
+                <Button
+                  variant="outline"
+                  className="w-full mt-3"
+                  onClick={() => setIsSelectingAssignment(false)}
+                >
+                  Return to Active Session
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // VIEW B: Active Attendance Marking / Editing Screen
+  // ───────────────────────────────────────────────────────────────────────────
+  return (
+    <div className="min-h-screen bg-gray-50 flex flex-col pb-24">
+      <TopBar
+        title={isSubmitted ? 'Session Attendance' : 'Mark Attendance'}
+        showBack
+      />
+
+      {/* Sticky Sub-Header with Counters & Assignment Switcher */}
+      <div className="sticky top-[53px] z-10 bg-white border-b border-gray-200 px-4 py-3 shadow-2xs">
+        <div className="flex items-start justify-between gap-2 mb-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h2 className="font-semibold text-gray-900 text-sm leading-tight truncate">
+                {subject?.name ?? 'Subject'}
+              </h2>
+              {/* Assignment Switcher Button */}
+              {!isSubmitted && (
+                <button
+                  type="button"
+                  onClick={() => setIsSelectingAssignment(true)}
+                  className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-0.5 bg-blue-50 px-2 py-0.5 rounded-full font-medium shrink-0"
+                  title="Switch class or subject"
+                >
+                  <ArrowLeftRight size={11} />
+                  <span>Switch</span>
+                </button>
+              )}
+            </div>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {cls?.name}{batch ? ` (${batch.name})` : ' · Whole Class'} · {formatDate(sessionDate)}
+            </p>
+          </div>
+          <div className="shrink-0">
             {isSubmitted ? (
               <Badge variant={isLocked ? 'red' : 'green'}>
                 {isLocked ? 'Locked' : 'Submitted'}
@@ -437,7 +650,7 @@ export default function MarkAttendancePage() {
               <div className="mt-3">
                 <Input
                   label="Reason for modification (Mandatory)"
-                  placeholder="e.g. Roll 12 arrived late with slip"
+                  placeholder="e.g. Roll 12 was marked absent by mistake"
                   value={editReason}
                   onChange={e => setEditReason(e.target.value)}
                   required
@@ -448,7 +661,7 @@ export default function MarkAttendancePage() {
         )}
 
         {/* Search & Bulk Toggle Controls */}
-        {!isLocked && !hasError && (
+        {!isLocked && !hasError && (students?.length ?? 0) > 0 && (
           <div className="space-y-2">
             <div className="relative">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -481,9 +694,19 @@ export default function MarkAttendancePage() {
         {/* Student Roster List */}
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner className="h-8 w-8" /></div>
-        ) : hasError ? null : filteredStudents.length === 0 ? (
+        ) : hasError ? null : !students || students.length === 0 ? (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-center space-y-2">
+            <Users size={32} className="text-amber-500 mx-auto" />
+            <h3 className="font-semibold text-amber-900 text-sm">No Enrolled Students Found</h3>
+            <p className="text-xs text-amber-700 leading-relaxed">
+              No students are currently enrolled in {cls?.name ?? 'this class division'}
+              {batch ? ` (Batch: ${batch.name})` : ''}.
+              Please ask your college administrator to enroll students to this class in the Admin Portal.
+            </p>
+          </div>
+        ) : filteredStudents.length === 0 ? (
           <div className="text-center py-12 text-gray-400 text-sm">
-            No matching students found for this class division
+            No matching students found for "{search}"
           </div>
         ) : (
           <div className="space-y-2">
@@ -503,7 +726,7 @@ export default function MarkAttendancePage() {
                     checked={isPresent}
                     onChange={checked => {
                       if (isLocked) return
-                      setAttendance(prev => ({
+                      setAttendanceOverrides(prev => ({
                         ...prev,
                         [student.id]: checked ? 'present' : 'absent',
                       }))
@@ -519,7 +742,7 @@ export default function MarkAttendancePage() {
       </div>
 
       {/* Fixed Bottom Action Bar */}
-      {!isLocked && !hasError && (
+      {!isLocked && !hasError && (students?.length ?? 0) > 0 && (
         <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-3 z-20">
           <div className="max-w-lg mx-auto flex gap-3">
             {!isSubmitted && (

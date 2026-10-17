@@ -28,7 +28,7 @@ export default function StudentHome() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from('students')
-        .select('*')
+        .select('*, classes(name, semester, academic_year), batches(name)')
         .eq('user_id', profile!.id)
         .maybeSingle()
       if (error) throw error
@@ -76,16 +76,37 @@ export default function StudentHome() {
 
   const dangerCount = summaries?.filter(s => s.status === 'danger').length ?? 0
 
+  const studentClass = (student as any)?.classes
+  const studentBatch = (student as any)?.batches
+
   return (
     <div>
       <TopBar title="College Companion" showLogout />
 
       <div className="p-4 space-y-4">
         {/* Greeting banner */}
-        <div className="bg-gradient-to-r from-blue-600 to-blue-500 rounded-2xl p-5 text-white">
+        <div className="bg-gradient-to-r from-blue-600 to-blue-500 rounded-2xl p-5 text-white shadow-sm">
           <p className="text-sm opacity-80">Good {greeting()},</p>
           <p className="text-xl font-bold">{profile?.name}</p>
-          <div className="mt-3 flex items-end gap-1">
+
+          {/* Student Academic Enrollment Info Chip */}
+          {student && student.class_id && (
+            <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-xs text-blue-100">
+              <span className="bg-white/20 backdrop-blur-xs px-2.5 py-0.5 rounded-full font-medium">
+                Roll No: {student.roll_no}
+              </span>
+              {studentClass && (
+                <span className="bg-white/20 backdrop-blur-xs px-2.5 py-0.5 rounded-full font-medium">
+                  Class: {studentClass.name} (Sem {studentClass.semester})
+                </span>
+              )}
+              <span className="bg-white/20 backdrop-blur-xs px-2.5 py-0.5 rounded-full font-medium">
+                Batch: {studentBatch?.name ?? 'General'}
+              </span>
+            </div>
+          )}
+
+          <div className="mt-4 flex items-end gap-1">
             <span className="text-4xl font-black">
               {overallPercent !== null ? `${overallPercent}%` : '--'}
             </span>
