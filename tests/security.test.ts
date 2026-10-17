@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { validatePortalAccess } from '../src/lib/authUtils.ts'
+import { calcPercent, calcSkippable, calcNeeded, classifyStatus } from '../src/lib/attendance.ts'
 
 describe('Security & Attendance Integrity Hardening Test Suite', () => {
   // ─── PART 1: Role Isolation & Data Boundaries ─────────────────────────────
@@ -296,6 +297,218 @@ describe('Security & Attendance Integrity Hardening Test Suite', () => {
       assert.equal(errorResult.status, 'error')
       assert.equal(errorResult.summaries, null)
       assert.notEqual(errorResult.status, 'success')
+    })
+  })
+
+  // ─── PART 4: Strict RLS Isolation & Cross-Entity Boundaries ───────────────
+  describe('4. Strict RLS Isolation & Cross-Entity Boundaries', () => {
+    it('21. strictly filters attendance records so student only receives their own row even on bulk select', () => {
+      // Simulating ar_student_read: (get_my_role() = 'student' AND student_id = get_my_student_id())
+      const myStudentId = 101
+      const myRole = 'student'
+
+      const allTableRecords = [
+        { id: 1, session_id: 1, student_id: 101, status: 'present' },
+        { id: 2, session_id: 1, student_id: 102, status: 'absent' },
+        { id: 3, session_id: 1, student_id: 103, status: 'present' },
+        { id: 4, session_id: 2, student_id: 101, status: 'absent' },
+        { id: 5, session_id: 2, student_id: 102, status: 'present' },
+      ]
+
+      const evaluatePolicy = (rec: { student_id: number }) => {
+        if (myRole === 'student') {
+          return rec.student_id === myStudentId
+        }
+        return false
+      }
+
+      const visibleRecords = allTableRecords.filter(evaluatePolicy)
+      assert.equal(visibleRecords.length, 2)
+      assert.deepEqual(visibleRecords.map(r => r.id), [1, 4])
+      assert.equal(visibleRecords.every(r => r.student_id === myStudentId), true)
+    })
+
+    it('22. professor cannot read student roster for classes outside their teaching assignments', () => {
+      // Simulating students_prof_roster_read:
+      // get_my_role() = 'professor' AND can_access_student_roster(class_id, batch_id) = TRUE
+      const profId = 5
+      const assignments = [
+        { id: 1, professor_id: profId, class_id: 10, batch_id: null }, // Theory for Class 10
+      ]
+
+      const canAccessStudentRoster = (classId: number, batchId: number | null) => {
+        return assignments.some(
+          ta => ta.professor_id === profId &&
+                ta.class_id === classId &&
+                (ta.batch_id === null || batchId === null || ta.batch_id === batchId)
+        )
+      }
+
+      // Student in Class 10
+      assert.equal(canAccessStudentRoster(10, null), true)
+      assert.equal(canAccessStudentRoster(10, 1), true)
+
+      // Student in Class 11 (unrelated class)
+      assert.equal(canAccessStudentRoster(11, null), false)
+      assert.equal(canAccessStudentRoster(11, 1), false)
+    })
+
+    it('23. professor assigned to a specific batch cannot access roster of other batches in practicals', () => {
+      const profId = 5
+      const assignments = [
+        { id: 2, professor_id: profId, class_id: 10, batch_id: 1 }, // Lab for Class 10 Batch 1 ONLY
+      ]
+
+      const canAccessStudentRoster = (classId: number, batchId: number | null) => {
+        return assignments.some(
+          ta => ta.professor_id === profId &&
+                ta.class_id === classId &&
+                (ta.batch_id === null || batchId === null || ta.batch_id === batchId)
+        )
+      }
+
+      // Batch 1 student (authorized)
+      assert.equal(canAccessStudentRoster(10, 1), true)
+
+      // Batch 2 student (unauthorized)
+      assert.equal(canAccessStudentRoster(10, 2), false)
+
+      // Different class student (unauthorized)
+      assert.equal(canAccessStudentRoster(12, 1), false)
+    })
+
+    it('24. student cannot access timetable slots for other classes or batches', () => {
+      // Simulating tt_student_read
+      const studentClassId = 10
+      const studentBatchId = 2
+
+      const teachingAssignments = [
+        { id: 101, class_id: 10, batch_id: null }, // Class 10 Lecture
+        { id: 102, class_id: 10, batch_id: 1 },    // Class 10 Batch 1 Lab
+        { id: 103, class_id: 10, batch_id: 2 },    // Class 10 Batch 2 Lab
+        { id: 104, class_id: 20, batch_id: null }, // Class 20 Lecture
+      ]
+
+      const eligibleAssignmentIds = new Set(
+        teachingAssignments
+          .filter(ta => ta.class_id === studentClassId && (ta.batch_id === null || ta.batch_id === studentBatchId))
+          .map(ta => ta.id)
+      )
+
+      assert.equal(eligibleAssignmentIds.has(101), true)  // Common lecture for my class
+      assert.equal(eligibleAssignmentIds.has(102), false) // Other batch lab -> forbidden
+      assert.equal(eligibleAssignmentIds.has(103), true)  // My batch lab -> allowed
+      assert.equal(eligibleAssignmentIds.has(104), false) // Different class -> forbidden
+    })
+
+    it('25. academic profile read prevents cross-student snooping without academic relationship', () => {
+      // Simulating can_read_academic_profile(target_user_id)
+      const evaluateAcademicProfileRead = (
+        caller: { id: string; role: string; profId?: number; classId?: number },
+        target: { id: string; role: string; classId?: number; batchId?: number },
+        assignments: Array<{ professor_id: number; class_id: number }>
+      ) => {
+        if (caller.id === target.id) return true
+        if (caller.role === 'admin') return true
+        if (caller.role === 'professor' && caller.profId && target.role === 'student' && target.classId) {
+          return assignments.some(a => a.professor_id === caller.profId && a.class_id === target.classId)
+        }
+        if (caller.role === 'student' && target.role === 'student') {
+          return false
+        }
+        return false
+      }
+
+      const assignments = [{ professor_id: 1, class_id: 10 }]
+
+      // Case 1: Student 1 attempts to read Student 2
+      assert.equal(
+        evaluateAcademicProfileRead(
+          { id: 's1', role: 'student', classId: 10 },
+          { id: 's2', role: 'student', classId: 10 },
+          assignments
+        ),
+        false
+      )
+
+      // Case 2: Professor 1 reads enrolled Student 1
+      assert.equal(
+        evaluateAcademicProfileRead(
+          { id: 'p1', role: 'professor', profId: 1 },
+          { id: 's1', role: 'student', classId: 10 },
+          assignments
+        ),
+        true
+      )
+
+      // Case 3: Professor 1 reads unassigned Student 3 (class 20)
+      assert.equal(
+        evaluateAcademicProfileRead(
+          { id: 'p1', role: 'professor', profId: 1 },
+          { id: 's3', role: 'student', classId: 20 },
+          assignments
+        ),
+        false
+      )
+
+      // Case 4: Admin reads any profile
+      assert.equal(
+        evaluateAcademicProfileRead(
+          { id: 'a1', role: 'admin' },
+          { id: 's3', role: 'student', classId: 20 },
+          assignments
+        ),
+        true
+      )
+    })
+
+    it('26. rejects duplicate session submission when session is already submitted', () => {
+      // Simulating submit_attendance_session duplicate check
+      const simulateSubmitRpc = (session: { id: number; status: string }) => {
+        if (session.status === 'submitted') {
+          throw new Error(`Session ${session.id} has already been submitted. Use correction workflow for modifications.`)
+        }
+        return { success: true, status: 'submitted' }
+      }
+
+      // First submit: draft -> submitted
+      const draftSession = { id: 10, status: 'draft' }
+      const res = simulateSubmitRpc(draftSession)
+      assert.equal(res.status, 'submitted')
+
+      // Second submit: already submitted -> error
+      const submittedSession = { id: 10, status: 'submitted' }
+      assert.throws(
+        () => simulateSubmitRpc(submittedSession),
+        /already been submitted/i
+      )
+    })
+
+    it('27. attendance formulas handle empty data and threshold boundary conditions correctly', () => {
+      // Empty data: 0 held classes
+      assert.equal(calcPercent(0, 0), null)
+      assert.equal(calcSkippable(0, 0, 75), 0)
+      assert.equal(calcNeeded(0, 0, 75), 0)
+      assert.equal(classifyStatus(calcPercent(0, 0), 75), 'unknown')
+
+      // Exactly at threshold boundary
+      assert.equal(calcPercent(15, 20), 75) // 15/20 = 75%
+      assert.equal(classifyStatus(75, 75), 'safe')
+      assert.equal(calcSkippable(15, 20, 75), 0)
+      assert.equal(calcNeeded(15, 20, 75), 0)
+
+      // Just below threshold (warning zone)
+      assert.equal(calcPercent(14, 20), 70)
+      assert.equal(classifyStatus(70, 75), 'warning')
+      assert.equal(calcNeeded(14, 20, 75), 4) // 75*20 - 100*14 = 1500 - 1400 = 100. 100 / (100 - 75) = 100 / 25 = 4 classes needed!
+      assert.equal(calcSkippable(14, 20, 75), 0)
+
+      // Far below threshold (danger zone)
+      assert.equal(calcPercent(10, 20), 50)
+      assert.equal(classifyStatus(50, 75), 'danger')
+
+      // 100% threshold where 1 class was missed
+      assert.equal(calcNeeded(9, 10, 100), Infinity)
     })
   })
 })

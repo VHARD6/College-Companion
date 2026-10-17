@@ -155,7 +155,11 @@ export default function AdminUsersPage() {
       })
 
       if (funcError) {
-        throw new Error(funcError.message || 'Failed to communicate with admin-create-user Edge Function.')
+        let msg = funcError.message || 'Failed to communicate with admin-create-user Edge Function.'
+        if (msg.includes('non-2xx') || msg.includes('404') || (funcError as any)?.context?.status === 404) {
+          msg = "Edge Function 'admin-create-user' is not deployed (HTTP 404). Please deploy it via Supabase CLI ('supabase functions deploy admin-create-user') or provision the user in the Supabase Dashboard."
+        }
+        throw new Error(msg)
       }
 
       if (funcData?.error) {
@@ -328,7 +332,11 @@ export default function AdminUsersPage() {
         })
 
         if (funcError || !funcData?.success) {
-          throw new Error(funcError?.message || funcData?.error || 'Failed to create student')
+          let msg = funcError?.message || funcData?.error || 'Failed to create student'
+          if (msg.includes('non-2xx') || msg.includes('404') || (funcError as any)?.context?.status === 404) {
+            msg = "Edge Function 'admin-create-user' is not deployed (HTTP 404). Deploy with 'supabase functions deploy admin-create-user'."
+          }
+          throw new Error(msg)
         }
 
         successCount++
