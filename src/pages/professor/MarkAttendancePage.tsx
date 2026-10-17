@@ -208,7 +208,7 @@ export default function MarkAttendancePage() {
         .order('roll_no')
 
       // Practical sessions are restricted strictly to that specific batch
-      if (batchId) {
+      if (batchId !== null && batchId !== undefined) {
         query = query.eq('batch_id', batchId)
       }
 
@@ -371,11 +371,24 @@ export default function MarkAttendancePage() {
       queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
       queryClient.invalidateQueries({ queryKey: ['attendance-records', sessionId] })
       queryClient.invalidateQueries({ queryKey: ['professor-today'] })
+      queryClient.invalidateQueries({ queryKey: ['professor-today-slots'] })
+      queryClient.invalidateQueries({ queryKey: ['professor-drafts'] })
       queryClient.invalidateQueries({ queryKey: ['student-attendance'] })
       queryClient.invalidateQueries({ queryKey: ['admin-audit-logs'] })
       queryClient.invalidateQueries({ queryKey: ['admin-submitted-sessions'] })
-      toast.success(data.submitFinal ? 'Attendance successfully submitted!' : 'Draft saved.')
-      navigate('/professor')
+
+      if (data.submitFinal) {
+        toast.success(isSubmitted ? 'Attendance modifications saved!' : 'Attendance successfully submitted!')
+        navigate('/professor')
+      } else {
+        toast.success('Draft saved.')
+        if (data.sessionId && data.sessionId !== sessionId) {
+          setSessionId(data.sessionId)
+          setSearchParams({ sessionId: String(data.sessionId) })
+          queryClient.invalidateQueries({ queryKey: ['session', data.sessionId] })
+          queryClient.invalidateQueries({ queryKey: ['attendance-records', data.sessionId] })
+        }
+      }
     },
     onError: (err: any) => {
       toast.error(err.message ?? 'Failed to save attendance.')
@@ -444,6 +457,14 @@ export default function MarkAttendancePage() {
                 <RefreshCw size={14} className="mr-1.5" />
                 Retry
               </Button>
+            </div>
+          ) : !professor ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-center space-y-2">
+              <Users size={32} className="text-amber-500 mx-auto" />
+              <h3 className="font-semibold text-amber-900 text-sm">Faculty Account Setup Required</h3>
+              <p className="text-xs text-amber-700 leading-relaxed">
+                Your user account is assigned the Professor role, but your faculty profile has not yet been linked to an academic department in the faculty directory. Please contact your college administrator to complete your profile setup.
+              </p>
             </div>
           ) : !professorAssignments || professorAssignments.length === 0 ? (
             <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-center space-y-2">
@@ -519,7 +540,7 @@ export default function MarkAttendancePage() {
   // VIEW B: Active Attendance Marking / Editing Screen
   // ───────────────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col pb-24">
+    <div className="min-h-screen bg-gray-50 flex flex-col pb-36">
       <TopBar
         title={isSubmitted ? 'Session Attendance' : 'Mark Attendance'}
         showBack
@@ -743,7 +764,7 @@ export default function MarkAttendancePage() {
 
       {/* Fixed Bottom Action Bar */}
       {!isLocked && !hasError && (students?.length ?? 0) > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-3 z-20">
+        <div className="fixed bottom-[56px] left-0 right-0 bg-white border-t border-gray-200 p-3 z-20 shadow-lg">
           <div className="max-w-lg mx-auto flex gap-3">
             {!isSubmitted && (
               <Button
