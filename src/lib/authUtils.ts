@@ -161,17 +161,12 @@ export function validatePassword(password: string): ValidationResult {
 }
 
 /**
- * Distinguishes authentication errors into actionable, user-friendly messages
- * with diagnostic logging in non-production environments.
+ * Diagnostic logger for development mode.
+ * Records error code, message, details, hint, and HTTP status without leaking passwords or secrets.
  */
-export function formatAuthError(error: any): string {
-  if (!error) return 'An unknown authentication error occurred.'
+export function logAuthDiagnostic(context: string, error: any): void {
+  if (!error) return
 
-  const code = (error.code || error.error_code || '').toLowerCase()
-  const msg = (error.message || error.msg || String(error)).toLowerCase()
-  const status = error.status
-
-  // Safe developer diagnostic log (never prints passwords or keys)
   const isDev =
     (typeof (globalThis as any).process !== 'undefined' &&
       (globalThis as any).process.env?.NODE_ENV !== 'production') ||
@@ -179,18 +174,69 @@ export function formatAuthError(error: any): string {
 
   if (isDev) {
     try {
-      console.debug('[Auth Diagnostic]', {
-        code,
-        status,
-        message: error.message,
+      console.debug(`[Auth Diagnostic: ${context}]`, {
+        code: error.code || error.error_code || 'UNKNOWN_CODE',
+        message: error.message || String(error),
+        details: error.details ?? null,
+        hint: error.hint ?? null,
+        status: error.status ?? null,
       })
     } catch {
       // Ignore console logging errors in test runners
     }
   }
+}
+
+/**
+ * Formats database errors encountered during profile queries into actionable, safe user messages.
+ * Prevents leaking raw internal database schemas to end users while giving clear hints in development.
+ */
+export function formatDatabaseAuthError(error: any): string {
+  if (!error) return 'Database error verifying account role.'
+
+  logAuthDiagnostic('database_profile_query', error)
+
+  const code = (error.code || error.error_code || '').toUpperCase()
+  const msg = (error.message || error.msg || String(error)).toLowerCase()
+
+  // 1. PostgreSQL RLS Infinite Recursion (42P17)
+  if (code === '42P17' || msg.includes('infinite recursion')) {
+    return 'Database policy error: recursive access rule detected. Please ensure migration 007 has been executed in the Supabase SQL Editor.'
+  }
+
+  // 2. PostgreSQL Permission Denied / Table privilege missing (42501)
+  if (code === '42501' || msg.includes('permission denied')) {
+    return 'Database permission denied: your account role does not have permission to view profile records.'
+  }
+
+  // 3. Missing relation / table does not exist (42P01)
+  if (code === '42P01' || msg.includes('relation "profiles" does not exist') || msg.includes('relation "public.profiles" does not exist')) {
+    return 'Database table profiles not found. Please ensure all migrations have been executed in the Supabase SQL Editor.'
+  }
+
+  // 4. Offline / Network error
+  if (msg.includes('failed to fetch') || msg.includes('networkerror') || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return 'Unable to reach the database server. Please check your internet connection or verify the server is reachable.'
+  }
+
+  // 5. Default safe message
+  return 'Database error verifying account role. Please try again or contact your administrator.'
+}
+
+/**
+ * Distinguishes authentication errors into actionable, user-friendly messages
+ * with diagnostic logging in non-production environments.
+ */
+export function formatAuthError(error: any): string {
+  if (!error) return 'An unknown authentication error occurred.'
+
+  logAuthDiagnostic('auth_flow', error)
+
+  const code = (error.code || error.error_code || '').toLowerCase()
+  const msg = (error.message || error.msg || String(error)).toLowerCase()
 
   // 1. Email invalid / rejected by server
-  if (code === 'email_address_invalid' || msg.includes('email address') && msg.includes('is invalid')) {
+  if (code === 'email_address_invalid' || (msg.includes('email address') && msg.includes('is invalid'))) {
     return 'The server rejected this email format. Please check for accidental typos or invalid characters.'
   }
 
@@ -225,7 +271,7 @@ export function formatAuthError(error: any): string {
   }
 
   // 8. Offline / Network error
-  if (msg.includes('failed to fetch') || msg.includes('networkerror') || !navigator.onLine) {
+  if (msg.includes('failed to fetch') || msg.includes('networkerror') || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     return 'Unable to reach the server. Please check your internet connection or verify the server is reachable.'
   }
 

@@ -5,6 +5,8 @@ import {
   validateEmail,
   validatePassword,
   formatAuthError,
+  formatDatabaseAuthError,
+  logAuthDiagnostic,
   validatePortalAccess,
 } from '../src/lib/authUtils.ts'
 
@@ -229,4 +231,175 @@ describe('Authentication & Validation Test Suite', () => {
       assert.match(res.error || '', /unauthorized role/i)
     })
   })
+
+  // ─── 7. Profile Verification & Database Diagnostics ─────────────────────
+  describe('Profile Verification, Database Diagnostics & Sign-Out Behavior', () => {
+    it('formats PostgreSQL 42P17 infinite recursion into actionable migration 007 guidance', () => {
+      const dbErr = {
+        code: '42P17',
+        message: 'infinite recursion detected in policy for relation "students"',
+        details: null,
+        hint: null,
+        status: 500,
+      }
+      const formatted = formatDatabaseAuthError(dbErr)
+      assert.match(formatted, /recursive access rule detected/i)
+      assert.match(formatted, /migration 007/i)
+    })
+
+    it('formats PostgreSQL 42501 permission denied into clear role guidance', () => {
+      const dbErr = {
+        code: '42501',
+        message: 'permission denied for table profiles',
+        details: null,
+        hint: null,
+        status: 403,
+      }
+      const formatted = formatDatabaseAuthError(dbErr)
+      assert.match(formatted, /permission denied/i)
+      assert.match(formatted, /account role/i)
+    })
+
+    it('formats missing relation 42P01 into table migration guidance', () => {
+      const dbErr = {
+        code: '42P01',
+        message: 'relation "public.profiles" does not exist',
+      }
+      const formatted = formatDatabaseAuthError(dbErr)
+      assert.match(formatted, /table profiles not found/i)
+    })
+
+    it('safe diagnostic logging captures code, message, details, hint, and status without error', () => {
+      let loggedOutput: any = null
+      const originalDebug = console.debug
+      console.debug = (_tag: string, payload: any) => {
+        loggedOutput = payload
+      }
+
+      try {
+        logAuthDiagnostic('test_context', {
+          code: '42P17',
+          message: 'infinite recursion detected',
+          details: 'Key (id)=(1) failed',
+          hint: 'Check table RLS policies',
+          status: 500,
+          secretPasswordShouldNotBeLogged: 'super-secret',
+        })
+
+        assert.equal(loggedOutput?.code, '42P17')
+        assert.equal(loggedOutput?.message, 'infinite recursion detected')
+        assert.equal(loggedOutput?.details, 'Key (id)=(1) failed')
+        assert.equal(loggedOutput?.hint, 'Check table RLS policies')
+        assert.equal(loggedOutput?.status, 500)
+        assert.equal(loggedOutput?.secretPasswordShouldNotBeLogged, undefined)
+      } finally {
+        console.debug = originalDebug
+      }
+    })
+
+    it('simulates signInForPortal: signs out and throws on database query failure', async () => {
+      let signedOut = false
+      const mockSignOut = async () => {
+        signedOut = true
+      }
+
+      const simulateSignInForPortal = async (
+        profErr: any,
+        userProfile: any,
+        portal: 'student' | 'staff'
+      ) => {
+        if (profErr) {
+          await mockSignOut()
+          throw new Error(formatDatabaseAuthError(profErr))
+        }
+
+        if (!userProfile) {
+          await mockSignOut()
+          throw new Error('Account profile not found. Please contact your college administrator or register as a student.')
+        }
+
+        const check = validatePortalAccess(portal, userProfile)
+        if (!check.allowed) {
+          await mockSignOut()
+          const mismatchErr: any = new Error(check.error)
+          mismatchErr.suggestedPortal = check.suggestedPortal
+          throw mismatchErr
+        }
+
+        return { profile: userProfile, redirectPath: check.redirectPath! }
+      }
+
+      // Test 1: Database error during profile lookup triggers immediate sign-out
+      signedOut = false
+      await assert.rejects(
+        async () => {
+          await simulateSignInForPortal(
+            { code: '42P17', message: 'infinite recursion detected in policy for relation "students"' },
+            null,
+            'student'
+          )
+        },
+        /migration 007/i
+      )
+      assert.equal(signedOut, true)
+
+      // Test 2: Missing profile row triggers immediate sign-out
+      signedOut = false
+      await assert.rejects(
+        async () => {
+          await simulateSignInForPortal(null, null, 'staff')
+        },
+        /profile not found/i
+      )
+      assert.equal(signedOut, true)
+
+      // Test 3: Role mismatch triggers immediate sign-out and suggests portal
+      signedOut = false
+      await assert.rejects(
+        async () => {
+          await simulateSignInForPortal(
+            null,
+            { id: 'u1', role: 'student', is_active: true },
+            'staff'
+          )
+        },
+        (err: any) => {
+          assert.equal(err.suggestedPortal, 'student')
+          return true
+        }
+      )
+      assert.equal(signedOut, true)
+
+      // Test 4: Active admin signs into staff portal -> succeeds without sign-out
+      signedOut = false
+      const adminRes = await simulateSignInForPortal(
+        null,
+        { id: 'admin-1', role: 'admin', is_active: true },
+        'staff'
+      )
+      assert.equal(adminRes.redirectPath, '/admin')
+      assert.equal(signedOut, false)
+
+      // Test 5: Active professor signs into staff portal -> succeeds without sign-out
+      signedOut = false
+      const profRes = await simulateSignInForPortal(
+        null,
+        { id: 'prof-1', role: 'professor', is_active: true },
+        'staff'
+      )
+      assert.equal(profRes.redirectPath, '/professor')
+      assert.equal(signedOut, false)
+
+      // Test 6: Active student signs into student portal -> succeeds without sign-out
+      signedOut = false
+      const studentRes = await simulateSignInForPortal(
+        null,
+        { id: 'stud-1', role: 'student', is_active: true },
+        'student'
+      )
+      assert.equal(studentRes.redirectPath, '/student')
+      assert.equal(signedOut, false)
+    })
+  })
 })
+

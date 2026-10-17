@@ -1,6 +1,15 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase, getSupabaseConfigStatus } from '../lib/supabase'
-import { normalizeEmail, validateEmail, validatePassword, formatAuthError, validatePortalAccess, type PortalType } from '../lib/authUtils'
+import {
+  normalizeEmail,
+  validateEmail,
+  validatePassword,
+  formatAuthError,
+  formatDatabaseAuthError,
+  logAuthDiagnostic,
+  validatePortalAccess,
+  type PortalType,
+} from '../lib/authUtils'
 import type { Profile } from '../types'
 import type { User } from '@supabase/supabase-js'
 
@@ -12,6 +21,7 @@ export interface SignUpOptions {
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
+  const [profileError, setProfileError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [configError, setConfigError] = useState<string | null>(null)
 
@@ -33,6 +43,7 @@ export function useAuth() {
       const targetId = userId ?? currentUser?.id
       if (!targetId) {
         setProfile(null)
+        setProfileError(null)
         setLoading(false)
         return
       }
@@ -43,15 +54,26 @@ export function useAuth() {
         .eq('id', targetId)
         .maybeSingle()
 
-      if (!error && data) {
+      if (error) {
+        logAuthDiagnostic('loadProfile:query_error', error)
+        setProfile(null)
+        setProfileError(formatDatabaseAuthError(error))
+      } else if (data) {
         setProfile(data)
+        setProfileError(null)
       } else {
         // Authenticated user exists but profile row has not yet been reconciled
+        logAuthDiagnostic('loadProfile:missing_profile_row', {
+          userId: targetId,
+          message: 'User authenticated in auth.users but has no corresponding row in public.profiles.',
+        })
         setProfile(null)
+        setProfileError('Profile record not found.')
       }
-    } catch (err) {
-      console.warn('Error loading user profile:', err)
+    } catch (err: any) {
+      logAuthDiagnostic('loadProfile:unexpected_exception', err)
       setProfile(null)
+      setProfileError(formatDatabaseAuthError(err))
     } finally {
       setLoading(false)
     }
@@ -127,8 +149,19 @@ export function useAuth() {
       .maybeSingle()
 
     if (profErr) {
+      logAuthDiagnostic('signInForPortal:profile_query_error', profErr)
       await signOut()
-      throw new Error('Database error verifying account role.')
+      throw new Error(formatDatabaseAuthError(profErr))
+    }
+
+    if (!userProfile) {
+      logAuthDiagnostic('signInForPortal:missing_profile_row', {
+        userId: authedUser.id,
+        email: authedUser.email,
+        message: 'Authentication succeeded, but public.profiles contains no record for this user UUID.',
+      })
+      await signOut()
+      throw new Error('Account profile not found. Please contact your college administrator or register as a student.')
     }
 
     const check = validatePortalAccess(portal, userProfile)
@@ -141,6 +174,7 @@ export function useAuth() {
     }
 
     setProfile(userProfile)
+    setProfileError(null)
     return {
       user: authedUser,
       profile: userProfile,
@@ -255,14 +289,16 @@ export function useAuth() {
     } finally {
       setUser(null)
       setProfile(null)
+      setProfileError(null)
     }
   }
 
   return {
     user,
     profile,
+    profileError,
     loading,
-    isProfilePending: !!user && !profile && !loading,
+    isProfilePending: !!user && !profile && !loading && profileError === 'Profile record not found.',
     configError,
     signIn,
     signInForPortal,

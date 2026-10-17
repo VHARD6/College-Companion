@@ -33,6 +33,7 @@ export default function LoginPage() {
     signOut,
     refreshProfile,
     profile,
+    profileError,
     user,
     loading,
     isProfilePending,
@@ -331,6 +332,47 @@ export default function LoginPage() {
           </p>
         </div>
 
+        {/* ─── DATABASE VERIFICATION ERROR SCREEN ─── */}
+        {user && !profile && !loading && profileError && profileError !== 'Profile record not found.' && (
+          <div className="text-center py-4 space-y-4">
+            <div className="w-14 h-14 bg-red-50 text-red-600 rounded-full flex items-center justify-center mx-auto">
+              <AlertCircle size={28} />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-gray-900">Database Verification Issue</h2>
+              <p className="text-xs text-gray-600 mt-1">
+                Signed in as <span className="font-semibold">{user.email}</span>
+              </p>
+            </div>
+            <div className="p-3.5 bg-red-50/70 border border-red-200 rounded-xl text-xs text-red-800 text-left space-y-1.5 leading-relaxed">
+              <p>{profileError}</p>
+              <p className="text-[11px] text-red-700">
+                <strong>For Administrators:</strong> If infinite recursion occurred, please run migration <code className="bg-red-100 px-1 py-0.5 rounded">007_fix_rls_recursion_and_profile_verification.sql</code> in the Supabase SQL Editor.
+              </p>
+            </div>
+            <div className="space-y-2 pt-2">
+              <Button
+                type="button"
+                className="w-full"
+                onClick={handleCheckProfile}
+                loading={checkingProfile}
+              >
+                <RefreshCw size={16} className="mr-1.5" />
+                Retry Verification
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full text-xs"
+                onClick={signOut}
+              >
+                <LogOut size={16} className="mr-1.5" />
+                Sign Out
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* ─── PENDING PROFILE RECONCILIATION SCREEN ─── */}
         {isProfilePending && user && (
           <div className="text-center py-4 space-y-4">
@@ -346,7 +388,7 @@ export default function LoginPage() {
             <div className="p-3.5 bg-amber-50/70 border border-amber-200 rounded-xl text-xs text-amber-800 text-left space-y-1.5 leading-relaxed">
               <p>Your authentication succeeded, but your user profile has not been initialized in the database yet.</p>
               <p className="text-[11px] text-amber-700">
-                <strong>For Administrators:</strong> Please ensure migration <code className="bg-amber-100 px-1 py-0.5 rounded">004_fix_handle_new_user_trigger.sql</code> has been run in the Supabase SQL Editor.
+                <strong>For Administrators:</strong> Please ensure migration <code className="bg-amber-100 px-1 py-0.5 rounded">007_fix_rls_recursion_and_profile_verification.sql</code> has been run in the Supabase SQL Editor.
               </p>
             </div>
             <div className="space-y-2 pt-2">
@@ -372,8 +414,8 @@ export default function LoginPage() {
           </div>
         )}
 
-        {/* If not pending profile, show normal portal flows */}
-        {!isProfilePending && (
+        {/* If not pending profile and no active user database error, show normal portal flows */}
+        {(!user || profile) && (
           <>
             {/* Staff Policy Notice: Highlight restricted access & no public self-registration */}
             {!isStudent && mode === 'signin' && (
