@@ -6,16 +6,22 @@ interface Props {
   title: string
   showBack?: boolean
   showLogout?: boolean
+  onBack?: () => void
 }
 
-export default function TopBar({ title, showBack = false, showLogout = false }: Props) {
+export default function TopBar({ title, showBack = false, showLogout = false, onBack }: Props) {
   const navigate = useNavigate()
   const { signOut, profile } = useAuth()
 
   return (
     <header className="sticky top-0 z-10 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
       {showBack && (
-        <button onClick={() => navigate(-1)} className="p-1 rounded-lg hover:bg-gray-100">
+        <button
+          type="button"
+          onClick={onBack ?? (() => navigate(-1))}
+          className="p-1 rounded-lg hover:bg-gray-100"
+          aria-label="Go back"
+        >
           <ArrowLeft size={20} />
         </button>
       )}

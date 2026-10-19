@@ -16,29 +16,41 @@ export default function TeachingAssignmentsPage() {
   const [batchId, setBatchId] = useState('')
 
   // Queries
-  const { data: professors } = useQuery({
+  const {
+    data: professors,
+    isError: isProfsError,
+  } = useQuery({
     queryKey: ['professors-list'],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('professors')
         .select('id, profiles(name), departments(name)')
         .order('id')
+      if (error) throw error
       return data ?? []
     },
   })
 
-  const { data: subjects } = useQuery({
+  const {
+    data: subjects,
+    isError: isSubjError,
+  } = useQuery({
     queryKey: ['subjects-list'],
     queryFn: async () => {
-      const { data } = await supabase.from('subjects').select('*').order('name')
+      const { data, error } = await supabase.from('subjects').select('*').order('name')
+      if (error) throw error
       return data ?? []
     },
   })
 
-  const { data: classes } = useQuery({
+  const {
+    data: classes,
+    isError: isClassesError,
+  } = useQuery({
     queryKey: ['classes-list'],
     queryFn: async () => {
-      const { data } = await supabase.from('classes').select('*, departments(name)').order('name')
+      const { data, error } = await supabase.from('classes').select('*, departments(name)').order('name')
+      if (error) throw error
       return data ?? []
     },
   })
@@ -47,15 +59,21 @@ export default function TeachingAssignmentsPage() {
     queryKey: ['batches-for-class', classId],
     enabled: !!classId,
     queryFn: async () => {
-      const { data } = await supabase.from('batches').select('*').eq('class_id', Number(classId))
+      const { data, error } = await supabase.from('batches').select('*').eq('class_id', Number(classId))
+      if (error) throw error
       return data ?? []
     },
   })
 
-  const { data: assignments, isLoading } = useQuery({
+  const {
+    data: assignments,
+    isLoading,
+    isError: isAssignmentsError,
+    refetch: refetchAssignments,
+  } = useQuery({
     queryKey: ['teaching-assignments'],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('teaching_assignments')
         .select(`
           id,
@@ -65,6 +83,7 @@ export default function TeachingAssignmentsPage() {
           batches(name)
         `)
         .order('id', { ascending: false })
+      if (error) throw error
       return data ?? []
     },
   })
@@ -77,37 +96,56 @@ export default function TeachingAssignmentsPage() {
       }
 
       // Pre-check for duplicate assignment
-      const { data: existing } = await supabase
+      let dupQuery = supabase
         .from('teaching_assignments')
         .select('id')
         .eq('professor_id', Number(professorId))
         .eq('subject_id', Number(subjectId))
         .eq('class_id', Number(classId))
-        .is('batch_id', batchId ? Number(batchId) : null)
-        .maybeSingle()
 
+      if (batchId) {
+        dupQuery = dupQuery.eq('batch_id', Number(batchId))
+      } else {
+        dupQuery = dupQuery.is('batch_id', null)
+      }
+
+      const { data: existing, error: dupCheckError } = await dupQuery.maybeSingle()
+      if (dupCheckError) throw dupCheckError
       if (existing) {
         throw new Error('This professor is already assigned to this subject and class.')
       }
 
-      const { error } = await supabase.from('teaching_assignments').insert({
-        professor_id: Number(professorId),
-        subject_id: Number(subjectId),
-        class_id: Number(classId),
-        batch_id: batchId ? Number(batchId) : null,
-      })
+      const { data: inserted, error } = await supabase
+        .from('teaching_assignments')
+        .insert({
+          professor_id: Number(professorId),
+          subject_id: Number(subjectId),
+          class_id: Number(classId),
+          batch_id: batchId ? Number(batchId) : null,
+        })
+        .select('id')
+
       if (error) {
         if (error.code === '23505') {
           throw new Error('This teaching assignment already exists.')
         }
         throw error
       }
+      if (!inserted || inserted.length === 0) {
+        throw new Error('Failed to create teaching assignment. Database returned 0 rows.')
+      }
+      return inserted[0]
     },
     onSuccess: () => {
       toast.success('Teaching assignment created!')
       setBatchId('')
       queryClient.invalidateQueries({ queryKey: ['teaching-assignments'] })
       queryClient.invalidateQueries({ queryKey: ['assignments-for-timetable'] })
+      queryClient.invalidateQueries({ queryKey: ['professor-assignments'] })
+      queryClient.invalidateQueries({ queryKey: ['professor-all-assignments'] })
+      queryClient.invalidateQueries({ queryKey: ['professor-today-slots'] })
+      queryClient.invalidateQueries({ queryKey: ['today-slots'] })
+      queryClient.invalidateQueries({ queryKey: ['draft-sessions'] })
     },
     onError: (err: any) => toast.error(err.message),
   })
@@ -115,21 +153,66 @@ export default function TeachingAssignmentsPage() {
   // Delete Assignment Mutation
   const deleteAssignmentMutation = useMutation({
     mutationFn: async (id: number) => {
-      const { error } = await supabase.from('teaching_assignments').delete().eq('id', id)
+      const { data: deleted, error } = await supabase
+        .from('teaching_assignments')
+        .delete()
+        .eq('id', id)
+        .select('id')
+
       if (error) throw error
+      if (!deleted || deleted.length === 0) {
+        throw new Error('Assignment could not be deleted or was already removed.')
+      }
     },
     onSuccess: () => {
       toast.success('Assignment removed')
       queryClient.invalidateQueries({ queryKey: ['teaching-assignments'] })
+      queryClient.invalidateQueries({ queryKey: ['assignments-for-timetable'] })
+      queryClient.invalidateQueries({ queryKey: ['professor-assignments'] })
+      queryClient.invalidateQueries({ queryKey: ['professor-all-assignments'] })
+      queryClient.invalidateQueries({ queryKey: ['professor-today-slots'] })
+      queryClient.invalidateQueries({ queryKey: ['today-slots'] })
+      queryClient.invalidateQueries({ queryKey: ['draft-sessions'] })
     },
     onError: (err: any) => toast.error(err.message),
   })
+
+  const getProfName = (profObj: any) => {
+    if (!profObj) return 'Unknown'
+    const profiles = Array.isArray(profObj.profiles) ? profObj.profiles[0] : profObj.profiles
+    return profiles?.name ?? 'Unknown'
+  }
+
+  const getDeptName = (deptObj: any) => {
+    if (!deptObj) return 'General'
+    const depts = Array.isArray(deptObj.departments) ? deptObj.departments[0] : deptObj.departments
+    return depts?.name ?? 'General'
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 pb-20">
       <TopBar title="Teaching Assignments" showBack />
 
       <div className="p-4 space-y-4 max-w-2xl mx-auto">
+        {/* Guidance and Error States */}
+        {professors && professors.length === 0 && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-800 space-y-1">
+            <p className="font-semibold text-amber-900">No professors assigned to departments yet</p>
+            <p>
+              Before assigning subjects, make sure professors are assigned to a department in the{' '}
+              <a href="/admin/users" className="underline font-medium text-blue-700">User Management</a>{' '}
+              page.
+            </p>
+          </div>
+        )}
+
+        {(isProfsError || isSubjError || isClassesError || isAssignmentsError) && (
+          <div className="bg-red-50 border border-red-200 rounded-2xl p-3 text-xs text-red-700 flex items-center justify-between">
+            <span>Failed to load some academic structure data.</span>
+            <Button size="sm" variant="outline" onClick={() => refetchAssignments()}>Retry</Button>
+          </div>
+        )}
+
         {/* Create Assignment Form */}
         <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm space-y-3">
           <h3 className="font-bold text-gray-900 text-sm">Assign Professor to Class</h3>
@@ -142,7 +225,7 @@ export default function TeachingAssignmentsPage() {
               onChange={e => setProfessorId(e.target.value)}
               options={professors?.map(p => ({
                 value: p.id,
-                label: `Prof. ${(p.profiles as any)?.name ?? 'Unknown'} (${(p.departments as any)?.name ?? 'General'})`,
+                label: `Prof. ${getProfName(p)} (${getDeptName(p)})`,
               })) ?? []}
             />
 
@@ -206,7 +289,7 @@ export default function TeachingAssignmentsPage() {
           ) : (
             <div className="space-y-2">
               {assignments?.map(a => {
-                const prof = (a.professors as any)?.profiles?.name ?? 'Unknown'
+                const prof = getProfName(a.professors)
                 const subj = a.subjects as any
                 const cls = a.classes as any
                 const batch = a.batches as any

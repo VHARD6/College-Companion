@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
 import TopBar from '../../components/ui/TopBar'
@@ -11,6 +12,8 @@ import toast from 'react-hot-toast'
 import { UserPlus, FileSpreadsheet, Search, Edit3, X, AlertCircle, RefreshCw } from 'lucide-react'
 import { normalizeEmail, validateEmail } from '../../lib/authUtils'
 import type { Role } from '../../types'
+
+import { extractSingleRelation } from '../../lib/adminUtils'
 
 interface NewUserForm {
   name: string
@@ -48,6 +51,7 @@ export default function AdminUsersPage() {
   const [editClassId, setEditClassId] = useState('')
   const [editBatchId, setEditBatchId] = useState('')
   const [editDepartmentId, setEditDepartmentId] = useState('')
+  const [editStudentDeptId, setEditStudentDeptId] = useState('')
 
   const [csvText, setCsvText] = useState('')
   const [isImporting, setIsImporting] = useState(false)
@@ -71,7 +75,13 @@ export default function AdminUsersPage() {
             roll_no,
             class_id,
             batch_id,
-            classes(id, name, semester),
+            classes(
+              id,
+              name,
+              semester,
+              department_id,
+              departments(id, name)
+            ),
             batches(id, name)
           ),
           professors(
@@ -99,7 +109,7 @@ export default function AdminUsersPage() {
   const { data: classes } = useQuery({
     queryKey: ['classes-list'],
     queryFn: async () => {
-      const { data, error } = await supabase.from('classes').select('*, departments(name)').order('name')
+      const { data, error } = await supabase.from('classes').select('*, departments(id, name)').order('name')
       if (error) throw error
       return data ?? []
     },
@@ -193,58 +203,136 @@ export default function AdminUsersPage() {
     },
   })
 
-  // Save Enrollment / Department assignment mutation
+  // Save Enrollment / Department assignment mutation with read-after-write verification
   const saveAssignmentMutation = useMutation({
     mutationFn: async () => {
       if (!editingUser) return
 
       if (editingUser.role === 'student') {
-        if (!editRollNo.trim()) {
+        const trimmedRollNo = editRollNo.trim()
+        if (!trimmedRollNo) {
           throw new Error('Roll number is required for student enrollment.')
         }
 
-        const { error } = await supabase.from('students').upsert({
-          user_id: editingUser.id,
-          roll_no: editRollNo.trim(),
-          class_id: editClassId ? Number(editClassId) : null,
-          batch_id: editBatchId ? Number(editBatchId) : null,
-        }, { onConflict: 'user_id' })
+        const classIdNum = editClassId ? Number(editClassId) : null
+        const batchIdNum = editBatchId ? Number(editBatchId) : null
 
-        if (error) throw error
+        if (classIdNum !== null && isNaN(classIdNum)) {
+          throw new Error('Invalid class division selected.')
+        }
+        if (batchIdNum !== null && isNaN(batchIdNum)) {
+          throw new Error('Invalid practical batch selected.')
+        }
+
+        // Validate batch compatibility if a batch is specified
+        if (batchIdNum !== null && classIdNum !== null && editBatches && editBatches.length > 0) {
+          const validBatch = editBatches.some(b => b.id === batchIdNum && b.class_id === classIdNum)
+          if (!validBatch) {
+            throw new Error('Selected practical batch does not belong to the selected class division.')
+          }
+        }
+
+        // Check roll number uniqueness before upsert
+        const { data: existingStudentWithRoll, error: rollCheckErr } = await supabase
+          .from('students')
+          .select('id, user_id, roll_no')
+          .eq('roll_no', trimmedRollNo)
+          .maybeSingle()
+
+        if (rollCheckErr) throw rollCheckErr
+        if (existingStudentWithRoll && existingStudentWithRoll.user_id !== editingUser.id) {
+          throw new Error(`Roll number "${trimmedRollNo}" is already assigned to another student.`)
+        }
+
+        // Upsert student with confirmed read-after-write
+        const { data: savedStudent, error: studentError } = await supabase
+          .from('students')
+          .upsert({
+            user_id: editingUser.id,
+            roll_no: trimmedRollNo,
+            class_id: classIdNum,
+            batch_id: batchIdNum,
+          }, { onConflict: 'user_id' })
+          .select(`
+            id,
+            user_id,
+            roll_no,
+            class_id,
+            batch_id,
+            classes(id, name, semester, department_id, departments(id, name)),
+            batches(id, name)
+          `)
+
+        if (studentError) throw studentError
+        if (!savedStudent || savedStudent.length === 0) {
+          throw new Error('Failed to persist student enrollment. Zero rows were updated in the database.')
+        }
+
+        return { role: 'student', data: savedStudent[0] }
       } else if (editingUser.role === 'professor') {
         if (!editDepartmentId) {
           throw new Error('Please select a department for this professor.')
         }
 
-        const { error } = await supabase.from('professors').upsert({
-          user_id: editingUser.id,
-          department_id: Number(editDepartmentId),
-        }, { onConflict: 'user_id' })
+        const deptIdNum = Number(editDepartmentId)
+        if (isNaN(deptIdNum)) {
+          throw new Error('Invalid department selected.')
+        }
 
-        if (error) throw error
+        // Upsert professor with confirmed read-after-write
+        const { data: savedProf, error: profError } = await supabase
+          .from('professors')
+          .upsert({
+            user_id: editingUser.id,
+            department_id: deptIdNum,
+          }, { onConflict: 'user_id' })
+          .select('id, user_id, department_id, departments(id, name)')
+
+        if (profError) throw profError
+        if (!savedProf || savedProf.length === 0) {
+          throw new Error('Failed to persist professor department assignment. Zero rows were updated in the database.')
+        }
+
+        return { role: 'professor', data: savedProf[0] }
       }
     },
-    onSuccess: () => {
-      toast.success('Assignment updated successfully!')
+    onSuccess: (result) => {
+      toast.success(
+        result?.role === 'student'
+          ? 'Student enrollment updated and verified!'
+          : 'Professor department assigned and verified!'
+      )
       setEditingUser(null)
       queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+      queryClient.invalidateQueries({ queryKey: ['professors-list'] })
       queryClient.invalidateQueries({ queryKey: ['admin-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['professor-assignments'] })
+      queryClient.invalidateQueries({ queryKey: ['professor-all-assignments'] })
     },
     onError: (err: any) => {
       toast.error(err.message ?? 'Failed to update assignment')
     },
   })
 
-  // Open modal with pre-populated values
+  // Open modal with pre-populated values using extractSingleRelation
   const handleOpenEdit = (user: any) => {
     setEditingUser(user)
     if (user.role === 'student') {
-      const studentRec = user.students?.[0]
+      const studentRec = extractSingleRelation(user.students)
       setEditRollNo(studentRec?.roll_no ?? '')
-      setEditClassId(studentRec?.class_id ? String(studentRec.class_id) : '')
+      const initialClassId = studentRec?.class_id ? String(studentRec.class_id) : ''
+      setEditClassId(initialClassId)
       setEditBatchId(studentRec?.batch_id ? String(studentRec.batch_id) : '')
+
+      // Auto-populate department from student's enrolled class if present
+      const initialDeptId = studentRec?.classes?.department_id
+        ? String(studentRec.classes.department_id)
+        : classes?.find(c => String(c.id) === initialClassId)?.department_id
+          ? String(classes.find(c => String(c.id) === initialClassId)?.department_id)
+          : ''
+      setEditStudentDeptId(initialDeptId)
     } else if (user.role === 'professor') {
-      const profRec = user.professors?.[0]
+      const profRec = extractSingleRelation(user.professors)
       setEditDepartmentId(profRec?.department_id ? String(profRec.department_id) : '')
     }
   }
@@ -358,8 +446,8 @@ export default function AdminUsersPage() {
   const filteredUsers = users?.filter(u => {
     const matchesRole = roleFilter === 'all' || u.role === roleFilter
     const q = search.toLowerCase().trim()
-    const studentRec = u.students?.[0]
-    const profRec = u.professors?.[0]
+    const studentRec = extractSingleRelation(u.students)
+    const profRec = extractSingleRelation(u.professors)
     const matchesSearch =
       !q ||
       u.name.toLowerCase().includes(q) ||
@@ -572,15 +660,49 @@ export default function AdminUsersPage() {
                     onChange={e => setEditRollNo(e.target.value)}
                   />
 
+                  {/* Academic Department / Branch Filter */}
+                  <div>
+                    <Select
+                      label="Academic Department / Branch"
+                      placeholder="Select department / branch..."
+                      value={editStudentDeptId}
+                      onChange={e => {
+                        const newDeptId = e.target.value
+                        setEditStudentDeptId(newDeptId)
+                        if (newDeptId && editClassId) {
+                          const cls = classes?.find(c => String(c.id) === editClassId)
+                          if (cls && String(cls.department_id) !== newDeptId) {
+                            setEditClassId('')
+                            setEditBatchId('')
+                          }
+                        }
+                      }}
+                      options={departments?.map(d => ({ value: d.id, label: d.name })) ?? []}
+                    />
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      Filtering class divisions by department. Students belong to a branch via their class enrollment.
+                    </p>
+                  </div>
+
                   <Select
                     label="Class Division"
                     placeholder="Select class division..."
                     value={editClassId}
                     onChange={e => {
-                      setEditClassId(e.target.value)
+                      const newClassId = e.target.value
+                      setEditClassId(newClassId)
                       setEditBatchId('')
+                      if (newClassId) {
+                        const cls = classes?.find(c => String(c.id) === newClassId)
+                        if (cls?.department_id) {
+                          setEditStudentDeptId(String(cls.department_id))
+                        }
+                      }
                     }}
-                    options={classes?.map(c => ({
+                    options={(editStudentDeptId
+                      ? classes?.filter(c => String(c.department_id) === editStudentDeptId)
+                      : classes
+                    )?.map(c => ({
                       value: c.id,
                       label: `${c.name} — Sem ${c.semester} (${(c.departments as any)?.name ?? 'Dept'})`,
                     })) ?? []}
@@ -595,6 +717,21 @@ export default function AdminUsersPage() {
                       options={editBatches.map(b => ({ value: b.id, label: b.name }))}
                     />
                   )}
+
+                  {(() => {
+                    const selectedClass = classes?.find(c => String(c.id) === editClassId)
+                    if (!selectedClass) return null
+                    const deptName = (selectedClass.departments as any)?.name ?? departments?.find(d => d.id === selectedClass.department_id)?.name
+                    return (
+                      <div className="bg-blue-50/70 border border-blue-100 rounded-xl p-2.5 text-xs text-blue-900">
+                        <span className="font-semibold">Derived Branch:</span>{' '}
+                        {deptName || 'Assigned'}
+                        <span className="text-blue-600 block text-[11px] mt-0.5">
+                          Academic Year: {selectedClass.academic_year} · Semester {selectedClass.semester}
+                        </span>
+                      </div>
+                    )
+                  })()}
                 </div>
               )}
 
@@ -678,8 +815,8 @@ export default function AdminUsersPage() {
         ) : (
           <div className="space-y-2.5">
             {filteredUsers?.map(user => {
-              const studentRec = user.students?.[0]
-              const profRec = user.professors?.[0]
+              const studentRec = extractSingleRelation(user.students)
+              const profRec = extractSingleRelation(user.professors)
 
               const isStudentEnrolled = studentRec && studentRec.class_id
               const isProfAssigned = profRec && profRec.department_id
@@ -703,12 +840,19 @@ export default function AdminUsersPage() {
                       {user.role === 'student' && (
                         <div className="mt-1 text-xs">
                           {isStudentEnrolled ? (
-                            <p className="text-gray-600">
-                              <span className="font-semibold text-gray-900">{studentRec.classes?.name}</span>
-                              {' '}(Sem {studentRec.classes?.semester})
-                              {' · '}Roll: <span className="font-mono font-medium">{studentRec.roll_no}</span>
-                              {studentRec.batches?.name && ` · ${studentRec.batches.name}`}
-                            </p>
+                            <div className="text-gray-600 space-y-0.5">
+                              <p>
+                                <span className="font-semibold text-gray-900">{studentRec.classes?.name}</span>
+                                {' '}(Sem {studentRec.classes?.semester})
+                                {' · '}Roll: <span className="font-mono font-medium">{studentRec.roll_no}</span>
+                                {studentRec.batches?.name && ` · ${studentRec.batches.name}`}
+                              </p>
+                              {studentRec.classes?.departments?.name && (
+                                <p className="text-blue-600 text-[11px] font-medium">
+                                  Branch: {studentRec.classes.departments.name}
+                                </p>
+                              )}
+                            </div>
                           ) : (
                             <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium bg-amber-100 text-amber-800">
                               ⚠ Class Enrollment Pending
@@ -722,9 +866,17 @@ export default function AdminUsersPage() {
                       {user.role === 'professor' && (
                         <div className="mt-1 text-xs">
                           {isProfAssigned ? (
-                            <p className="text-gray-600 font-medium">
-                              Dept: {profRec.departments?.name}
-                            </p>
+                            <div className="space-y-0.5">
+                              <p className="text-gray-600 font-medium">
+                                Dept: {profRec.departments?.name}
+                              </p>
+                              <Link
+                                to="/admin/assignments"
+                                className="inline-flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-800 hover:underline font-medium"
+                              >
+                                <span>Assign Subjects &amp; Classes →</span>
+                              </Link>
+                            </div>
                           ) : (
                             <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium bg-amber-100 text-amber-800">
                               ⚠ Department Pending
