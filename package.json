@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test": "node --experimental-strip-types tests/auth.test.ts && node --experimental-strip-types tests/attendance.test.ts && node --experimental-strip-types tests/security.test.ts && node --experimental-strip-types tests/professor.test.ts && node --experimental-strip-types tests/admin_persistence.test.ts && node --experimental-strip-types tests/attendance_workflow.test.ts",
+    "test": "node --experimental-strip-types tests/auth.test.ts && node --experimental-strip-types tests/attendance.test.ts && node --experimental-strip-types tests/security.test.ts && node --experimental-strip-types tests/professor.test.ts && node --experimental-strip-types tests/admin_persistence.test.ts && node --experimental-strip-types tests/attendance_workflow.test.ts && node --experimental-strip-types tests/attendance_session_init.test.ts",
     "preview": "vite preview",
     "android:sync": "npm run build && npx cap sync android",
     "android:open": "npx cap open android",

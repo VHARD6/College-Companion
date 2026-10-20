@@ -12,11 +12,11 @@ import Card from '../../components/ui/Card'
 import { todayISO, formatDate } from '../../lib/utils'
 import {
   sortStudentsByRollNo,
-  initRosterStatus,
   calculateAttendanceCounts,
   toggleAttendanceStatus,
   getAbsentStudents,
 } from '../../lib/attendanceWorkflow'
+import { resolveRosterInitializationState } from '../../lib/attendanceSessionInit'
 import toast from 'react-hot-toast'
 import {
   Search,
@@ -239,7 +239,13 @@ export default function MarkAttendancePage() {
   }, [rawStudents])
 
   // 7. Fetch existing attendance records if session exists
-  const { data: existingRecords, isLoading: recordsLoading } = useQuery({
+  const {
+    data: existingRecords,
+    isLoading: recordsLoading,
+    isError: isRecordsError,
+    error: recordsError,
+    refetch: refetchRecords,
+  } = useQuery({
     queryKey: ['attendance-records', sessionId],
     enabled: !!sessionId && !isSelectingAssignment,
     queryFn: async () => {
@@ -252,20 +258,44 @@ export default function MarkAttendancePage() {
     },
   })
 
-  // 8. Initialize roster status:
+  // 8. Initialize roster status safely:
+  // - For an existing session: wait for query; on failure, HALT and report error (never default to present)
   // - For a new session: all students start as 'present'
-  // - For an existing draft or submitted session: restore saved statuses
+  // - For an existing session: restore saved statuses
   useEffect(() => {
     if (!students || students.length === 0) return
 
-    const recordsKey = existingRecords ? existingRecords.length : 'unloaded'
-    const loadKey = `${assignmentId}-${sessionId ?? 'new'}-${recordsKey}`
+    const resolution = resolveRosterInitializationState({
+      sessionId,
+      students,
+      existingRecords,
+      isRecordsLoading: !!sessionId && recordsLoading,
+      isRecordsError: !!sessionId && isRecordsError,
+      recordsError,
+      currentRoster: Object.keys(rosterStatus).length > 0 ? rosterStatus : null,
+      sessionStatus: existingSession?.status,
+    })
 
-    if (initializedKey !== loadKey) {
-      setRosterStatus(initRosterStatus(students, existingRecords))
-      setInitializedKey(loadKey)
+    if (resolution.state === 'READY' && resolution.source !== 'in_memory_preserved') {
+      const recordsKey = existingRecords ? existingRecords.length : 'unloaded'
+      const loadKey = `${assignmentId}-${sessionId ?? 'new'}-${recordsKey}-${resolution.source}`
+
+      if (initializedKey !== loadKey) {
+        setRosterStatus(resolution.roster)
+        setInitializedKey(loadKey)
+      }
     }
-  }, [students, existingRecords, assignmentId, sessionId, initializedKey])
+  }, [
+    students,
+    existingRecords,
+    assignmentId,
+    sessionId,
+    initializedKey,
+    recordsLoading,
+    isRecordsError,
+    recordsError,
+    existingSession?.status,
+  ])
 
   // Derived absentees for Step 2
   const absentees = useMemo(() => {
@@ -337,6 +367,10 @@ export default function MarkAttendancePage() {
   const saveMutation = useMutation({
     mutationFn: async ({ submitFinal }: { submitFinal: boolean }) => {
       if (!profile || !assignmentId) throw new Error('Missing profile or assignment information')
+
+      if (sessionId && (isRecordsError || !existingRecords)) {
+        throw new Error('Existing attendance records have not loaded. Please retry loading records before saving.')
+      }
 
       // Case A: Save Draft (Atomic RPC)
       if (!submitFinal) {
@@ -439,9 +473,11 @@ export default function MarkAttendancePage() {
   const subject = (currentAssignment as any)?.subjects
   const cls = (currentAssignment as any)?.classes
   const batch = (currentAssignment as any)?.batches
-  const isLoading = sessionLoading || studentsLoading || recordsLoading
-  const hasError = isSessionError || isAssignmentError || isStudentsError
+  const isRecordsFetchError = !!sessionId && isRecordsError
+  const isLoading = sessionLoading || studentsLoading || (!!sessionId && recordsLoading)
+  const hasError = isSessionError || isAssignmentError || isStudentsError || isRecordsFetchError
   const errorMessage =
+    (recordsError as any)?.message ||
     (sessionError as any)?.message ||
     (assignmentError as any)?.message ||
     (studentsError as any)?.message
@@ -638,7 +674,7 @@ export default function MarkAttendancePage() {
           <button
             type="button"
             onClick={() => setCurrentStep(2)}
-            disabled={!students || students.length === 0}
+            disabled={hasError || !students || students.length === 0}
             className={`flex items-center gap-1.5 text-xs transition-colors disabled:opacity-50 ${
               currentStep === 2
                 ? 'text-blue-600 font-bold'
@@ -656,8 +692,8 @@ export default function MarkAttendancePage() {
             >
               {currentStep > 2 ? '✓' : '2'}
             </span>
-            <span className="hidden sm:inline">Absentees ({absentCount})</span>
-            <span className="sm:hidden">Absentees ({absentCount})</span>
+            <span className="hidden sm:inline">Absentees ({hasError ? '--' : absentCount})</span>
+            <span className="sm:hidden">Absentees ({hasError ? '--' : absentCount})</span>
           </button>
 
           <span className="text-gray-300 text-xs font-bold">→</span>
@@ -666,7 +702,7 @@ export default function MarkAttendancePage() {
           <button
             type="button"
             onClick={() => setCurrentStep(3)}
-            disabled={!students || students.length === 0}
+            disabled={hasError || !students || students.length === 0}
             className={`flex items-center gap-1.5 text-xs transition-colors disabled:opacity-50 ${
               currentStep === 3
                 ? 'text-blue-600 font-bold'
@@ -692,15 +728,15 @@ export default function MarkAttendancePage() {
           <div className="max-w-lg mx-auto flex items-center justify-between gap-2">
             <div className="flex-1 bg-white border border-gray-200 rounded-xl py-1 px-2 text-center shadow-2xs">
               <span className="text-[11px] text-gray-500 font-medium">Total: </span>
-              <span className="text-xs font-bold text-gray-800">{totalCount}</span>
+              <span className="text-xs font-bold text-gray-800">{hasError ? '--' : totalCount}</span>
             </div>
             <div className="flex-1 bg-green-50 border border-green-200 rounded-xl py-1 px-2 text-center shadow-2xs">
               <span className="text-[11px] text-green-700 font-medium">Present: </span>
-              <span className="text-xs font-bold text-green-800">{presentCount}</span>
+              <span className="text-xs font-bold text-green-800">{hasError ? '--' : presentCount}</span>
             </div>
             <div className="flex-1 bg-red-50 border border-red-200 rounded-xl py-1 px-2 text-center shadow-2xs">
               <span className="text-[11px] text-red-700 font-medium">Absent: </span>
-              <span className="text-xs font-bold text-red-800">{absentCount}</span>
+              <span className="text-xs font-bold text-red-800">{hasError ? '--' : absentCount}</span>
             </div>
           </div>
         </div>
@@ -721,6 +757,7 @@ export default function MarkAttendancePage() {
                   refetchSession()
                   refetchAssignment()
                   refetchStudents()
+                  refetchRecords()
                 }}
               >
                 <RefreshCw size={14} className="mr-1.5" />
