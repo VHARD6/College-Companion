@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
@@ -16,7 +16,12 @@ import {
   toggleAttendanceStatus,
   getAbsentStudents,
 } from '../../lib/attendanceWorkflow'
-import { resolveRosterInitializationState } from '../../lib/attendanceSessionInit'
+import {
+  resolveRosterInitializationState,
+  evaluateAttendanceSaveAction,
+  AttendanceGuardError,
+} from '../../lib/attendanceSessionInit'
+import { classifyAttendanceError, logDiagnostic } from '../../lib/errors'
 import toast from 'react-hot-toast'
 import {
   Search,
@@ -58,11 +63,21 @@ export default function MarkAttendancePage() {
   const [rosterStatus, setRosterStatus] = useState<Record<number, AttendanceStatus>>({})
   const [initializedKey, setInitializedKey] = useState<string | null>(null)
 
+  const rosterStatusRef = useRef<Record<number, AttendanceStatus>>(rosterStatus)
+  const rosterSessionIdRef = useRef<number | null | undefined>(sessionId)
+
+  useEffect(() => {
+    rosterStatusRef.current = rosterStatus
+  }, [rosterStatus])
+
   // Submission confirmation modal state
   const [showConfirmModal, setShowConfirmModal] = useState(false)
 
   // Edit reason (required when modifying an already submitted session)
   const [editReason, setEditReason] = useState('')
+
+  // Authentication error state during save / submit actions
+  const [saveAuthError, setSaveAuthError] = useState<string | null>(null)
 
   // 1. Fetch professor record
   const {
@@ -189,7 +204,7 @@ export default function MarkAttendancePage() {
 
       if (!isMounted) return
       if (error) {
-        console.error('Failed to check session for date:', error)
+        logDiagnostic(error)
         return
       }
 
@@ -272,17 +287,24 @@ export default function MarkAttendancePage() {
       isRecordsLoading: !!sessionId && recordsLoading,
       isRecordsError: !!sessionId && isRecordsError,
       recordsError,
-      currentRoster: Object.keys(rosterStatus).length > 0 ? rosterStatus : null,
+      currentRoster: Object.keys(rosterStatusRef.current).length > 0 ? rosterStatusRef.current : null,
+      currentRosterSessionId: rosterSessionIdRef.current,
       sessionStatus: existingSession?.status,
     })
 
-    if (resolution.state === 'READY' && resolution.source !== 'in_memory_preserved') {
-      const recordsKey = existingRecords ? existingRecords.length : 'unloaded'
-      const loadKey = `${assignmentId}-${sessionId ?? 'new'}-${recordsKey}-${resolution.source}`
+    if (resolution.state === 'READY') {
+      if (resolution.source !== 'in_memory_preserved') {
+        const recordsKey = existingRecords ? existingRecords.length : 'unloaded'
+        const loadKey = `${assignmentId}-${sessionId ?? 'new'}-${recordsKey}-${resolution.source}`
 
-      if (initializedKey !== loadKey) {
-        setRosterStatus(resolution.roster)
-        setInitializedKey(loadKey)
+        if (initializedKey !== loadKey) {
+          setRosterStatus(resolution.roster)
+          rosterStatusRef.current = resolution.roster
+          rosterSessionIdRef.current = sessionId
+          setInitializedKey(loadKey)
+        }
+      } else {
+        rosterSessionIdRef.current = sessionId
       }
     }
   }, [
@@ -342,16 +364,20 @@ export default function MarkAttendancePage() {
     setAssignmentId(newAssignmentId)
     setSessionId(null)
     setRosterStatus({})
+    rosterStatusRef.current = {}
+    rosterSessionIdRef.current = undefined
     setInitializedKey(null)
     setCurrentStep(1)
     setSearch('')
     setEditReason('')
+    setSaveAuthError(null)
     setIsSelectingAssignment(false)
     setSearchParams({ assignmentId: String(newAssignmentId) })
   }
 
   // Handle wizard step back navigation
   const handleBack = () => {
+    setSaveAuthError(null)
     if (currentStep === 3) {
       setCurrentStep(2)
     } else if (currentStep === 2) {
@@ -368,8 +394,28 @@ export default function MarkAttendancePage() {
     mutationFn: async ({ submitFinal }: { submitFinal: boolean }) => {
       if (!profile || !assignmentId) throw new Error('Missing profile or assignment information')
 
-      if (sessionId && (isRecordsError || !existingRecords)) {
-        throw new Error('Existing attendance records have not loaded. Please retry loading records before saving.')
+      const operation = !submitFinal ? 'save_draft' : (!isSubmitted ? 'submit' : 'correct')
+
+      const guard = evaluateAttendanceSaveAction({
+        operation,
+        sessionId,
+        isSubmitted,
+        isLocked,
+        studentsCount: students?.length ?? 0,
+        hasInMemoryRoster: Object.keys(rosterStatus).length > 0,
+        isRosterMatchingSession:
+          rosterSessionIdRef.current !== undefined &&
+          (sessionId !== null && sessionId !== undefined
+            ? rosterSessionIdRef.current === sessionId
+            : rosterSessionIdRef.current === null),
+        existingRecords,
+        isRecordsLoading: !!sessionId && recordsLoading,
+        isRecordsError: !!sessionId && isRecordsError,
+        editReason,
+      })
+
+      if (!guard.allowed) {
+        throw new AttendanceGuardError(guard.reason ?? 'Attendance action cannot be processed.', guard.code)
       }
 
       // Case A: Save Draft (Atomic RPC)
@@ -443,6 +489,7 @@ export default function MarkAttendancePage() {
       return { submitFinal: true, sessionId, changesApplied: rpcData?.changes_applied }
     },
     onSuccess: (data) => {
+      setSaveAuthError(null)
       queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
       queryClient.invalidateQueries({ queryKey: ['attendance-records', sessionId] })
       queryClient.invalidateQueries({ queryKey: ['professor-today'] })
@@ -457,6 +504,9 @@ export default function MarkAttendancePage() {
         navigate('/professor')
       } else {
         toast.success('Draft saved.')
+        if (data.sessionId) {
+          rosterSessionIdRef.current = data.sessionId
+        }
         if (data.sessionId && data.sessionId !== sessionId) {
           setSessionId(data.sessionId)
           setSearchParams({ sessionId: String(data.sessionId) })
@@ -465,22 +515,61 @@ export default function MarkAttendancePage() {
         }
       }
     },
-    onError: (err: any) => {
-      toast.error(err.message ?? 'Failed to save attendance.')
+    onError: (err: unknown) => {
+      // 1. Pure domain guard rejection: show domain message, never route through remote error sanitizer
+      if (
+        err instanceof AttendanceGuardError ||
+        (typeof err === 'object' && err !== null && (err as any).name === 'AttendanceGuardError')
+      ) {
+        toast.error((err as any).message || 'Action not permitted.')
+        return
+      }
+
+      // 2. Actual remote / backend / network / server failure: log once at error-handling point
+      logDiagnostic(err)
+      const classified = classifyAttendanceError(err)
+
+      if (classified.action === 'sign_in') {
+        setSaveAuthError(classified.userMessage)
+        toast(
+          (t) => (
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span>{classified.userMessage}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  toast.dismiss(t.id)
+                  navigate('/login')
+                }}
+                className="px-2.5 py-1 bg-blue-600 text-white text-xs font-bold rounded-lg shrink-0 hover:bg-blue-700 transition-colors"
+              >
+                Sign In
+              </button>
+            </div>
+          ),
+          { id: 'save-auth-expired', duration: 8000 }
+        )
+      } else {
+        toast.error(classified.userMessage)
+      }
     },
   })
 
   const subject = (currentAssignment as any)?.subjects
   const cls = (currentAssignment as any)?.classes
   const batch = (currentAssignment as any)?.batches
-  const isRecordsFetchError = !!sessionId && isRecordsError
-  const isLoading = sessionLoading || studentsLoading || (!!sessionId && recordsLoading)
-  const hasError = isSessionError || isAssignmentError || isStudentsError || isRecordsFetchError
-  const errorMessage =
-    (recordsError as any)?.message ||
-    (sessionError as any)?.message ||
-    (assignmentError as any)?.message ||
-    (studentsError as any)?.message
+  const isRecordsFatalError = !!sessionId && isRecordsError && existingRecords === undefined
+  const isLoading = sessionLoading || studentsLoading || (!!sessionId && recordsLoading && existingRecords === undefined)
+  const hasError = isSessionError || isAssignmentError || isStudentsError || isRecordsFatalError
+  const rawError = (isRecordsFatalError ? recordsError : null) || sessionError || assignmentError || studentsError
+  const classifiedError = classifyAttendanceError(rawError)
+
+  // Log diagnostic error information once when a query failure occurs (never on ordinary renders, never when no error)
+  useEffect(() => {
+    if (rawError) {
+      logDiagnostic(rawError)
+    }
+  }, [rawError])
 
   // ───────────────────────────────────────────────────────────────────────────
   // VIEW 0: Assignment Selection Screen
@@ -748,22 +837,36 @@ export default function MarkAttendancePage() {
           <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-center space-y-2">
             <AlertCircle size={24} className="text-red-500 mx-auto" />
             <p className="text-sm font-semibold text-red-900">Failed to load session details</p>
-            <p className="text-xs text-red-600">{errorMessage || 'Database connection error'}</p>
-            <div className="flex gap-2 justify-center pt-1">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  refetchSession()
-                  refetchAssignment()
-                  refetchStudents()
-                  refetchRecords()
-                }}
-              >
-                <RefreshCw size={14} className="mr-1.5" />
-                Retry
-              </Button>
-            </div>
+            <p className="text-xs text-red-600">{classifiedError.userMessage}</p>
+            {classifiedError.action === 'sign_in' ? (
+              <div className="flex gap-2 justify-center pt-1">
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={() => navigate('/login')}
+                >
+                  Sign In
+                </Button>
+              </div>
+            ) : classifiedError.action === 'retry' ? (
+              <div className="flex gap-2 justify-center pt-1">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    refetchSession()
+                    refetchAssignment()
+                    refetchStudents()
+                    if (sessionId) {
+                      refetchRecords()
+                    }
+                  }}
+                >
+                  <RefreshCw size={14} className="mr-1.5" />
+                  Retry
+                </Button>
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -1140,87 +1243,101 @@ export default function MarkAttendancePage() {
           ───────────────────────────────────────────────────────────────────── */}
       {!isLocked && !hasError && (students?.length ?? 0) > 0 && (
         <div className="fixed bottom-[56px] left-0 right-0 bg-white border-t border-gray-200 p-3 z-30 shadow-lg">
-          <div className="max-w-lg mx-auto flex gap-2.5">
-            {/* Step 1 Actions */}
-            {currentStep === 1 && (
-              <>
-                {!isSubmitted && (
+          <div className="max-w-lg mx-auto space-y-2">
+            {saveAuthError && (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-2.5 text-xs text-red-900 flex items-center justify-between gap-2">
+                <span className="font-medium">{saveAuthError}</span>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={() => navigate('/login')}
+                >
+                  Sign In
+                </Button>
+              </div>
+            )}
+            <div className="flex gap-2.5">
+              {/* Step 1 Actions */}
+              {currentStep === 1 && (
+                <>
+                  {!isSubmitted && (
+                    <Button
+                      variant="outline"
+                      className="flex-1"
+                      loading={saveMutation.isPending}
+                      onClick={() => saveMutation.mutate({ submitFinal: false })}
+                    >
+                      Save Draft
+                    </Button>
+                  )}
+                  <Button
+                    variant="primary"
+                    className="flex-1"
+                    onClick={() => setCurrentStep(2)}
+                  >
+                    Review Absentees ({absentCount}) →
+                  </Button>
+                </>
+              )}
+
+              {/* Step 2 Actions */}
+              {currentStep === 2 && (
+                <>
                   <Button
                     variant="outline"
                     className="flex-1"
-                    loading={saveMutation.isPending}
-                    onClick={() => saveMutation.mutate({ submitFinal: false })}
+                    onClick={() => setCurrentStep(1)}
                   >
-                    Save Draft
+                    ← Back to Attendance
                   </Button>
-                )}
-                <Button
-                  variant="primary"
-                  className="flex-1"
-                  onClick={() => setCurrentStep(2)}
-                >
-                  Review Absentees ({absentCount}) →
-                </Button>
-              </>
-            )}
+                  <Button
+                    variant="primary"
+                    className="flex-1"
+                    onClick={() => setCurrentStep(3)}
+                  >
+                    Review Final Attendance →
+                  </Button>
+                </>
+              )}
 
-            {/* Step 2 Actions */}
-            {currentStep === 2 && (
-              <>
-                <Button
-                  variant="outline"
-                  className="flex-1"
-                  onClick={() => setCurrentStep(1)}
-                >
-                  ← Back to Attendance
-                </Button>
-                <Button
-                  variant="primary"
-                  className="flex-1"
-                  onClick={() => setCurrentStep(3)}
-                >
-                  Review Final Attendance →
-                </Button>
-              </>
-            )}
-
-            {/* Step 3 Actions */}
-            {currentStep === 3 && (
-              <>
-                <Button
-                  variant="outline"
-                  className="shrink-0 px-3.5"
-                  onClick={() => setCurrentStep(2)}
-                >
-                  ← Back
-                </Button>
-                {!isSubmitted && (
+              {/* Step 3 Actions */}
+              {currentStep === 3 && (
+                <>
                   <Button
                     variant="outline"
+                    className="shrink-0 px-3.5"
+                    onClick={() => setCurrentStep(2)}
+                  >
+                    ← Back
+                  </Button>
+                  {!isSubmitted && (
+                    <Button
+                      variant="outline"
+                      className="flex-1"
+                      loading={saveMutation.isPending}
+                      onClick={() => saveMutation.mutate({ submitFinal: false })}
+                    >
+                      Save Draft
+                    </Button>
+                  )}
+                  <Button
+                    variant="primary"
                     className="flex-1"
                     loading={saveMutation.isPending}
-                    onClick={() => saveMutation.mutate({ submitFinal: false })}
+                    disabled={isSubmitted && !editReason.trim()}
+                    onClick={() => {
+                      if (isSubmitted) {
+                        saveMutation.mutate({ submitFinal: true })
+                      } else {
+                        setShowConfirmModal(true)
+                      }
+                    }}
                   >
-                    Save Draft
+                    {isSubmitted ? 'Save Changes' : 'Submit Attendance'}
                   </Button>
-                )}
-                <Button
-                  variant="primary"
-                  className="flex-1"
-                  loading={saveMutation.isPending}
-                  disabled={isSubmitted && !editReason.trim()}
-                  onClick={() => {
-                    if (isSubmitted) {
-                      saveMutation.mutate({ submitFinal: true })
-                    } else {
-                      setShowConfirmModal(true)
-                    }
-                  }}
-                >
-                  {isSubmitted ? 'Save Changes' : 'Submit Attendance'}
-                </Button>
-              </>
-            )}
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}
