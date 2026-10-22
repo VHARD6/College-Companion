@@ -23,15 +23,23 @@ export interface ClassifiedError {
  * 2. Uses text matching ONLY as a fallback when structured info is absent or insufficient.
  * 3. Never loosely matches bare numbers like "500" (e.g. "500 students processed", "500 records found", "ID 503").
  * 4. Text fallback requires explicit HTTP status context (e.g. "HTTP 503", "status: 503") or server error wording.
- * 5. Auth expired returns action: 'sign_in'.
- * 6. Permission and validation errors return action: 'none'.
- * 7. Never leaks database internals, table names, RLS policy text, SQL, or JWT strings.
+ * 5. Maps known business-rule exceptions from migrations (correction window, session locked, assignment auth).
+ * 6. Distinguishes remote save/submit failures (not saved, marks still on screen) from query loading failures.
+ * 7. Auth expired returns action: 'sign_in'.
+ * 8. Permission and validation errors return action: 'none'.
+ * 9. Never leaks database internals, table names, RLS policy text, SQL, or JWT strings.
  */
-export function classifyAttendanceError(error: unknown): ClassifiedError {
+export function classifyAttendanceError(
+  error: unknown,
+  context: 'load' | 'save' = 'load'
+): ClassifiedError {
   if (!error) {
     return {
       category: 'unknown',
-      userMessage: 'Something went wrong while loading attendance. Please try again.',
+      userMessage:
+        context === 'save'
+          ? 'Something went wrong. Attendance was not saved, but your marks are still on screen. Please try again.'
+          : 'Something went wrong while loading attendance. Please try again.',
       action: 'retry',
     }
   }
@@ -63,7 +71,83 @@ export function classifyAttendanceError(error: unknown): ClassifiedError {
     rawMessage = error
   }
 
-  // ─── Step 2: Classify by structured HTTP status or known code FIRST ─
+  const lowerMsg = rawMessage.toLowerCase()
+
+  // ─── Step 2: Map Known Business-Rule Exceptions from Migrations ───
+  // A. Correction window expired
+  if (
+    lowerMsg.includes('correction window') &&
+    (lowerMsg.includes('expired') || lowerMsg.includes('locked'))
+  ) {
+    return {
+      category: 'permission_denied',
+      userMessage: 'The correction window for this session has expired. Attendance modifications are locked.',
+      action: 'none',
+    }
+  }
+
+  // B. Attendance session locked / already submitted
+  if (
+    lowerMsg.includes('already been submitted') ||
+    lowerMsg.includes('already submitted') ||
+    lowerMsg.includes('cannot reopen a submitted session') ||
+    lowerMsg.includes('submitted_at timestamp is authoritative')
+  ) {
+    return {
+      category: 'permission_denied',
+      userMessage:
+        'This attendance session has already been submitted and is locked from draft changes. Use the correction workflow to make modifications.',
+      action: 'none',
+    }
+  }
+
+  // C. Professor not assigned / unauthorized for teaching assignment
+  if (
+    lowerMsg.includes('not authorized for teaching assignment') ||
+    lowerMsg.includes('not have permission to modify another professor') ||
+    lowerMsg.includes('only active professors or admins') ||
+    lowerMsg.includes('only professors or admins')
+  ) {
+    return {
+      category: 'permission_denied',
+      userMessage: 'You are not authorized to mark or modify attendance for this teaching assignment.',
+      action: 'none',
+    }
+  }
+
+  // D. Student enrollment mismatch
+  if (lowerMsg.includes('is not enrolled in class')) {
+    return {
+      category: 'validation',
+      userMessage: 'One or more students are not enrolled in this class or batch.',
+      action: 'none',
+    }
+  }
+
+  // E. Future date rejection
+  if (lowerMsg.includes('cannot mark attendance for a future date')) {
+    return {
+      category: 'validation',
+      userMessage: 'Attendance cannot be marked for a future date.',
+      action: 'none',
+    }
+  }
+
+  // F. Mandatory reason missing
+  if (
+    lowerMsg.includes('non-empty reason is mandatory') ||
+    lowerMsg.includes('reason is mandatory') ||
+    lowerMsg.includes('mandatory reason') ||
+    lowerMsg.includes('reason is required')
+  ) {
+    return {
+      category: 'validation',
+      userMessage: 'A mandatory reason is required for attendance corrections.',
+      action: 'none',
+    }
+  }
+
+  // ─── Step 3: Classify by structured HTTP status or known code FIRST ─
   // Authentication / JWT expiry
   if (
     status === 401 ||
@@ -74,7 +158,10 @@ export function classifyAttendanceError(error: unknown): ClassifiedError {
   ) {
     return {
       category: 'auth_expired',
-      userMessage: 'Your sign-in session has expired. Please sign in again.',
+      userMessage:
+        context === 'save'
+          ? 'Your session has expired. Attendance was not saved, but your marks are still on screen. Please sign in again.'
+          : 'Your sign-in session has expired. Please sign in again.',
       action: 'sign_in',
     }
   }
@@ -87,7 +174,10 @@ export function classifyAttendanceError(error: unknown): ClassifiedError {
   ) {
     return {
       category: 'permission_denied',
-      userMessage: 'You do not have permission to perform this action.',
+      userMessage:
+        context === 'save'
+          ? 'You do not have permission to save attendance for this session. Your current marks are still on screen.'
+          : 'You do not have permission to perform this action.',
       action: 'none',
     }
   }
@@ -103,7 +193,10 @@ export function classifyAttendanceError(error: unknown): ClassifiedError {
   ) {
     return {
       category: 'validation',
-      userMessage: 'Some details need checking. Review the attendance information and try again.',
+      userMessage:
+        context === 'save'
+          ? 'Some details need checking. Attendance was not saved, but your marks are still on screen.'
+          : 'Some details need checking. Review the attendance information and try again.',
       action: 'none',
     }
   }
@@ -117,7 +210,10 @@ export function classifyAttendanceError(error: unknown): ClassifiedError {
   ) {
     return {
       category: 'server_error',
-      userMessage: 'The server is temporarily unavailable. Please try again shortly.',
+      userMessage:
+        context === 'save'
+          ? 'The server is temporarily unavailable. Attendance was not saved, but your current marks are still on screen. Please try again shortly.'
+          : 'The server is temporarily unavailable. Please try again shortly.',
       action: 'retry',
     }
   }
@@ -132,14 +228,15 @@ export function classifyAttendanceError(error: unknown): ClassifiedError {
   ) {
     return {
       category: 'network',
-      userMessage: 'Unable to reach the server. Check your connection and try again.',
+      userMessage:
+        context === 'save'
+          ? 'Unable to reach the server. Attendance was not saved, but your current marks are still on screen. Please check your connection and retry.'
+          : 'Unable to reach the server. Check your connection and try again.',
       action: 'retry',
     }
   }
 
-  // ─── Step 3: Text matching ONLY as a fallback ───────────────────────
-  const lowerMsg = rawMessage.toLowerCase()
-
+  // ─── Step 4: Text matching ONLY as a fallback ───────────────────────
   // Network text fallback
   if (
     lowerMsg.includes('failed to fetch') ||
@@ -151,7 +248,10 @@ export function classifyAttendanceError(error: unknown): ClassifiedError {
   ) {
     return {
       category: 'network',
-      userMessage: 'Unable to reach the server. Check your connection and try again.',
+      userMessage:
+        context === 'save'
+          ? 'Unable to reach the server. Attendance was not saved, but your current marks are still on screen. Please check your connection and retry.'
+          : 'Unable to reach the server. Check your connection and try again.',
       action: 'retry',
     }
   }
@@ -165,7 +265,10 @@ export function classifyAttendanceError(error: unknown): ClassifiedError {
   ) {
     return {
       category: 'auth_expired',
-      userMessage: 'Your sign-in session has expired. Please sign in again.',
+      userMessage:
+        context === 'save'
+          ? 'Your session has expired. Attendance was not saved, but your marks are still on screen. Please sign in again.'
+          : 'Your sign-in session has expired. Please sign in again.',
       action: 'sign_in',
     }
   }
@@ -179,23 +282,25 @@ export function classifyAttendanceError(error: unknown): ClassifiedError {
   ) {
     return {
       category: 'permission_denied',
-      userMessage: 'You do not have permission to perform this action.',
+      userMessage:
+        context === 'save'
+          ? 'You do not have permission to save attendance for this session. Your current marks are still on screen.'
+          : 'You do not have permission to perform this action.',
       action: 'none',
     }
   }
 
   // Validation text fallback
   if (
-    lowerMsg.includes('mandatory reason') ||
-    lowerMsg.includes('reason is required') ||
     lowerMsg.includes('invalid status') ||
-    lowerMsg.includes('invalid session type') ||
-    lowerMsg.includes('cannot mark attendance for a future date') ||
-    lowerMsg.includes('student is not enrolled')
+    lowerMsg.includes('invalid session type')
   ) {
     return {
       category: 'validation',
-      userMessage: 'Some details need checking. Review the attendance information and try again.',
+      userMessage:
+        context === 'save'
+          ? 'Some details need checking. Attendance was not saved, but your marks are still on screen.'
+          : 'Some details need checking. Review the attendance information and try again.',
       action: 'none',
     }
   }
@@ -213,7 +318,10 @@ export function classifyAttendanceError(error: unknown): ClassifiedError {
   ) {
     return {
       category: 'server_error',
-      userMessage: 'The server is temporarily unavailable. Please try again shortly.',
+      userMessage:
+        context === 'save'
+          ? 'The server is temporarily unavailable. Attendance was not saved, but your current marks are still on screen. Please try again shortly.'
+          : 'The server is temporarily unavailable. Please try again shortly.',
       action: 'retry',
     }
   }
@@ -221,7 +329,10 @@ export function classifyAttendanceError(error: unknown): ClassifiedError {
   // Default unknown fallback
   return {
     category: 'unknown',
-    userMessage: 'Something went wrong while loading attendance. Please try again.',
+    userMessage:
+      context === 'save'
+        ? 'Something went wrong. Attendance was not saved, but your current marks are still on screen. Please try again.'
+        : 'Something went wrong while loading attendance. Please try again.',
     action: 'retry',
   }
 }
@@ -235,8 +346,11 @@ export function sanitizeDiagnosticString(str: string): string {
     .replace(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*/g, '[REDACTED_JWT]')
     // Redact Bearer tokens
     .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [REDACTED]')
-    // Redact password and secret assignments
-    .replace(/(password|secret|token|api[_-]?key)=([^&\s]+)/gi, '$1=[REDACTED]')
+    // Redact sensitive credential assignments using both = and : separators
+    .replace(
+      /(["']?(?:password|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token)["']?\s*[:=]\s*)(?!\[REDACTED(?:_JWT)?\])(["'][^"'\r\n]+["']|[^\s,;"'&]+)/gi,
+      '$1[REDACTED]'
+    )
 }
 
 /**

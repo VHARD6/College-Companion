@@ -176,6 +176,7 @@ export interface SaveGuardResolution {
     | 'REASON_REQUIRED'
     | 'UNRESOLVED_RECORDS'
     | 'RECORD_BASELINE_MISSING'
+    | 'ROSTER_IDENTITY_MISMATCH'
   reason?: string
 }
 
@@ -246,7 +247,7 @@ export function evaluateAttendanceSaveAction(input: SaveGuardInput): SaveGuardRe
     }
 
     if (sessionId !== null && sessionId !== undefined) {
-      // If we don't have an identity-matched in-memory roster for this session:
+      // If in-memory roster identity is not verified for this active session:
       if (!isRosterMatchingSession) {
         if (existingRecords === undefined) {
           if (isRecordsError) {
@@ -263,12 +264,16 @@ export function evaluateAttendanceSaveAction(input: SaveGuardInput): SaveGuardRe
               reason: 'Existing attendance records are still loading.',
             }
           }
-          // Query not started, disabled, or returned no data yet
           return {
             allowed: false,
             code: 'UNRESOLVED_RECORDS',
             reason: 'Existing attendance records have not been loaded for this session.',
           }
+        }
+        return {
+          allowed: false,
+          code: 'ROSTER_IDENTITY_MISMATCH',
+          reason: 'Current in-memory attendance marks do not match the active session identity.',
         }
       }
     }
@@ -287,7 +292,7 @@ export function evaluateAttendanceSaveAction(input: SaveGuardInput): SaveGuardRe
     }
 
     if (sessionId !== null && sessionId !== undefined) {
-      // If we don't have an identity-matched in-memory roster for this session:
+      // If in-memory roster identity is not verified for this active session:
       if (!isRosterMatchingSession) {
         if (existingRecords === undefined) {
           if (isRecordsError) {
@@ -304,12 +309,16 @@ export function evaluateAttendanceSaveAction(input: SaveGuardInput): SaveGuardRe
               reason: 'Existing attendance records are still loading.',
             }
           }
-          // Query not started, disabled, or returned no data yet
           return {
             allowed: false,
             code: 'UNRESOLVED_RECORDS',
             reason: 'Existing attendance records have not been loaded for this session.',
           }
+        }
+        return {
+          allowed: false,
+          code: 'ROSTER_IDENTITY_MISMATCH',
+          reason: 'Current in-memory attendance marks do not match the active session identity.',
         }
       }
     }
@@ -324,6 +333,15 @@ export function evaluateAttendanceSaveAction(input: SaveGuardInput): SaveGuardRe
         allowed: false,
         code: 'NOT_SUBMITTED',
         reason: 'Session is not submitted. Use standard submission instead.',
+      }
+    }
+
+    // Roster identity must explicitly match the active session
+    if (!isRosterMatchingSession) {
+      return {
+        allowed: false,
+        code: 'ROSTER_IDENTITY_MISMATCH',
+        reason: 'Current in-memory attendance marks do not match the active session identity.',
       }
     }
 

@@ -821,6 +821,140 @@ describe('Attendance Session Initialization & Query Safety Test Suite (Pass 1a)'
       assert.equal(err.message, 'A mandatory reason is required.')
       assert.equal(err.code, 'REASON_REQUIRED')
     })
+
+    it('11. fails closed for save_draft, submit, and correct when roster identity mismatches existing session, even with defined existingRecords', () => {
+      const records = [
+        { student_id: 101, status: 'present' as AttendanceStatus },
+        { student_id: 102, status: 'absent' as AttendanceStatus },
+      ]
+
+      // A. Save Draft with mismatched identity
+      const draftRes = evaluateAttendanceSaveAction({
+        operation: 'save_draft',
+        sessionId: 100,
+        isSubmitted: false,
+        isLocked: false,
+        studentsCount: 3,
+        hasInMemoryRoster: true,
+        isRosterMatchingSession: false, // Mismatched!
+        existingRecords: records,
+        isRecordsLoading: false,
+        isRecordsError: false,
+      })
+      assert.equal(draftRes.allowed, false)
+      assert.equal(draftRes.code, 'ROSTER_IDENTITY_MISMATCH')
+      assert.equal(
+        draftRes.reason,
+        'Current in-memory attendance marks do not match the active session identity.'
+      )
+
+      // B. Submit with mismatched identity
+      const submitRes = evaluateAttendanceSaveAction({
+        operation: 'submit',
+        sessionId: 100,
+        isSubmitted: false,
+        isLocked: false,
+        studentsCount: 3,
+        hasInMemoryRoster: true,
+        isRosterMatchingSession: false, // Mismatched!
+        existingRecords: records,
+        isRecordsLoading: false,
+        isRecordsError: false,
+      })
+      assert.equal(submitRes.allowed, false)
+      assert.equal(submitRes.code, 'ROSTER_IDENTITY_MISMATCH')
+      assert.equal(
+        submitRes.reason,
+        'Current in-memory attendance marks do not match the active session identity.'
+      )
+
+      // C. Correct with mismatched identity (even with valid reason and records)
+      const correctRes = evaluateAttendanceSaveAction({
+        operation: 'correct',
+        sessionId: 100,
+        isSubmitted: true,
+        isLocked: false,
+        studentsCount: 3,
+        hasInMemoryRoster: true,
+        isRosterMatchingSession: false, // Mismatched!
+        existingRecords: records,
+        isRecordsLoading: false,
+        isRecordsError: false,
+        editReason: 'Student was present',
+      })
+      assert.equal(correctRes.allowed, false)
+      assert.equal(correctRes.code, 'ROSTER_IDENTITY_MISMATCH')
+      assert.equal(
+        correctRes.reason,
+        'Current in-memory attendance marks do not match the active session identity.'
+      )
+    })
+
+    it('12. allows save_draft, submit, and correct when roster identity explicitly matches existing session', () => {
+      const records = [
+        { student_id: 101, status: 'present' as AttendanceStatus },
+        { student_id: 102, status: 'absent' as AttendanceStatus },
+      ]
+
+      const draftRes = evaluateAttendanceSaveAction({
+        operation: 'save_draft',
+        sessionId: 100,
+        isSubmitted: false,
+        isLocked: false,
+        studentsCount: 3,
+        hasInMemoryRoster: true,
+        isRosterMatchingSession: true,
+        existingRecords: records,
+        isRecordsLoading: false,
+        isRecordsError: false,
+      })
+      assert.equal(draftRes.allowed, true)
+
+      const submitRes = evaluateAttendanceSaveAction({
+        operation: 'submit',
+        sessionId: 100,
+        isSubmitted: false,
+        isLocked: false,
+        studentsCount: 3,
+        hasInMemoryRoster: true,
+        isRosterMatchingSession: true,
+        existingRecords: records,
+        isRecordsLoading: false,
+        isRecordsError: false,
+      })
+      assert.equal(submitRes.allowed, true)
+
+      const correctRes = evaluateAttendanceSaveAction({
+        operation: 'correct',
+        sessionId: 100,
+        isSubmitted: true,
+        isLocked: false,
+        studentsCount: 3,
+        hasInMemoryRoster: true,
+        isRosterMatchingSession: true,
+        existingRecords: records,
+        isRecordsLoading: false,
+        isRecordsError: false,
+        editReason: 'Correction justified by attendance slip',
+      })
+      assert.equal(correctRes.allowed, true)
+    })
+
+    it('13. allows immediate Submit after first Save Draft creates session ID despite pending records query', () => {
+      const res = evaluateAttendanceSaveAction({
+        operation: 'submit',
+        sessionId: 250,
+        isSubmitted: false,
+        isLocked: false,
+        studentsCount: 3,
+        hasInMemoryRoster: true,
+        isRosterMatchingSession: true,
+        existingRecords: undefined,
+        isRecordsLoading: true,
+        isRecordsError: false,
+      })
+      assert.equal(res.allowed, true)
+    })
   })
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -963,6 +1097,140 @@ describe('Attendance Session Initialization & Query Safety Test Suite (Pass 1a)'
       assert(!res2.userMessage.includes('secrets'))
       assert(!res2.userMessage.includes('SQL'))
     })
+
+    it('maps database business rule exceptions from migration 006 to user-friendly messages with action none', () => {
+      // A. Correction window expired
+      const errWindow = new Error('Correction window (24 hours) has expired for session 5. Modification locked.')
+      const resWindow = classifyAttendanceError(errWindow)
+      assert.equal(resWindow.category, 'permission_denied')
+      assert.equal(resWindow.action, 'none')
+      assert.equal(
+        resWindow.userMessage,
+        'The correction window for this session has expired. Attendance modifications are locked.'
+      )
+
+      // B. Session already submitted / locked
+      const errSubmitted = new Error('Session 12 has already been submitted. Use correction workflow for modifications.')
+      const resSubmitted = classifyAttendanceError(errSubmitted)
+      assert.equal(resSubmitted.category, 'permission_denied')
+      assert.equal(resSubmitted.action, 'none')
+      assert.equal(
+        resSubmitted.userMessage,
+        'This attendance session has already been submitted and is locked from draft changes. Use the correction workflow to make modifications.'
+      )
+
+      const errReopen = new Error('Cannot reopen a submitted session as draft.')
+      const resReopen = classifyAttendanceError(errReopen)
+      assert.equal(resReopen.category, 'permission_denied')
+      assert.equal(resReopen.action, 'none')
+      assert.equal(
+        resReopen.userMessage,
+        'This attendance session has already been submitted and is locked from draft changes. Use the correction workflow to make modifications.'
+      )
+
+      // C. Assignment authorization
+      const errAuth = new Error('Forbidden: You are not authorized for teaching assignment 4')
+      const resAuth = classifyAttendanceError(errAuth)
+      assert.equal(resAuth.category, 'permission_denied')
+      assert.equal(resAuth.action, 'none')
+      assert.equal(
+        resAuth.userMessage,
+        'You are not authorized to mark or modify attendance for this teaching assignment.'
+      )
+
+      const errProfPerm = new Error('Forbidden: You do not have permission to modify another professor\'s session.')
+      const resProfPerm = classifyAttendanceError(errProfPerm)
+      assert.equal(resProfPerm.category, 'permission_denied')
+      assert.equal(resProfPerm.action, 'none')
+      assert.equal(
+        resProfPerm.userMessage,
+        'You are not authorized to mark or modify attendance for this teaching assignment.'
+      )
+
+      // D. Student enrollment
+      const errEnrolled = new Error('Student CS01 is not enrolled in class 3')
+      const resEnrolled = classifyAttendanceError(errEnrolled)
+      assert.equal(resEnrolled.category, 'validation')
+      assert.equal(resEnrolled.action, 'none')
+      assert.equal(
+        resEnrolled.userMessage,
+        'One or more students are not enrolled in this class or batch.'
+      )
+
+      // E. Future date rejection
+      const errFuture = new Error('Cannot mark attendance for a future date.')
+      const resFuture = classifyAttendanceError(errFuture)
+      assert.equal(resFuture.category, 'validation')
+      assert.equal(resFuture.action, 'none')
+      assert.equal(
+        resFuture.userMessage,
+        'Attendance cannot be marked for a future date.'
+      )
+
+      // F. Mandatory reason
+      const errReason = new Error('A non-empty reason is mandatory for attendance correction.')
+      const resReason = classifyAttendanceError(errReason)
+      assert.equal(resReason.category, 'validation')
+      assert.equal(resReason.action, 'none')
+      assert.equal(
+        resReason.userMessage,
+        'A mandatory reason is required for attendance corrections.'
+      )
+    })
+
+    it('provides explicit contextual messages distinguishing save failures from loading failures', () => {
+      // 1. Auth expired during save
+      const saveAuth = classifyAttendanceError({ status: 401 }, 'save')
+      assert.equal(saveAuth.category, 'auth_expired')
+      assert.equal(saveAuth.action, 'sign_in')
+      assert(saveAuth.userMessage.includes('Attendance was not saved, but your marks are still on screen'))
+      assert(saveAuth.userMessage.includes('sign in again'))
+
+      // Auth expired during load
+      const loadAuth = classifyAttendanceError({ status: 401 }, 'load')
+      assert.equal(loadAuth.category, 'auth_expired')
+      assert.equal(loadAuth.userMessage, 'Your sign-in session has expired. Please sign in again.')
+
+      // 2. Network error during save
+      const saveNet = classifyAttendanceError(new Error('Failed to fetch'), 'save')
+      assert.equal(saveNet.category, 'network')
+      assert.equal(saveNet.action, 'retry')
+      assert(saveNet.userMessage.includes('Attendance was not saved, but your current marks are still on screen'))
+
+      // Network error during load
+      const loadNet = classifyAttendanceError(new Error('Failed to fetch'), 'load')
+      assert.equal(loadNet.category, 'network')
+      assert.equal(loadNet.userMessage, 'Unable to reach the server. Check your connection and try again.')
+
+      // 3. Server error during save
+      const saveServer = classifyAttendanceError({ status: 503 }, 'save')
+      assert.equal(saveServer.category, 'server_error')
+      assert.equal(saveServer.action, 'retry')
+      assert(saveServer.userMessage.includes('Attendance was not saved, but your current marks are still on screen'))
+
+      // Server error during load
+      const loadServer = classifyAttendanceError({ status: 503 }, 'load')
+      assert.equal(loadServer.category, 'server_error')
+      assert.equal(loadServer.userMessage, 'The server is temporarily unavailable. Please try again shortly.')
+
+      // 4. Permission error during save
+      const savePerm = classifyAttendanceError({ code: '42501' }, 'save')
+      assert.equal(savePerm.category, 'permission_denied')
+      assert.equal(savePerm.action, 'none')
+      assert(savePerm.userMessage.includes('You do not have permission to save attendance for this session'))
+      assert(savePerm.userMessage.includes('current marks are still on screen'))
+
+      // 5. Unknown error during save
+      const saveUnknown = classifyAttendanceError(new Error('Unexpected exception 12345'), 'save')
+      assert.equal(saveUnknown.category, 'unknown')
+      assert.equal(saveUnknown.action, 'retry')
+      assert(saveUnknown.userMessage.includes('Attendance was not saved, but your current marks are still on screen'))
+
+      // Unknown error during load
+      const loadUnknown = classifyAttendanceError(new Error('Unexpected exception 12345'), 'load')
+      assert.equal(loadUnknown.category, 'unknown')
+      assert.equal(loadUnknown.userMessage, 'Something went wrong while loading attendance. Please try again.')
+    })
   })
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -1045,6 +1313,63 @@ describe('Attendance Session Initialization & Query Safety Test Suite (Pass 1a)'
       const input = 'error: password=mysecret and token=abc12345 in Bearer xyz98765'
       const output = sanitizeDiagnosticString(input)
       assert.equal(output, 'error: password=[REDACTED] and token=[REDACTED] in Bearer [REDACTED]')
+    })
+
+    it('sanitizeDiagnosticString redacts credentials with both : and = separators without redacting normal prose', () => {
+      // Colon assignments
+      assert.equal(
+        sanitizeDiagnosticString('Error with password: mySecretPassword123'),
+        'Error with password: [REDACTED]'
+      )
+      assert.equal(
+        sanitizeDiagnosticString('details: access_token: secret_token_xyz'),
+        'details: access_token: [REDACTED]'
+      )
+      const validJwt =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
+      assert.equal(
+        sanitizeDiagnosticString('details: access_token: ' + validJwt),
+        'details: access_token: [REDACTED_JWT]'
+      )
+      assert.equal(
+        sanitizeDiagnosticString('failed at secret: confidential_phrase!'),
+        'failed at secret: [REDACTED]'
+      )
+      assert.equal(
+        sanitizeDiagnosticString('api_key: abc-123-def'),
+        'api_key: [REDACTED]'
+      )
+
+      // Equal sign assignments
+      assert.equal(
+        sanitizeDiagnosticString('url?refresh_token=rt_987654321&other=1'),
+        'url?refresh_token=[REDACTED]&other=1'
+      )
+      assert.equal(
+        sanitizeDiagnosticString('password=secret123'),
+        'password=[REDACTED]'
+      )
+
+      // Quoted keys and values
+      assert.equal(
+        sanitizeDiagnosticString('{"access_token": "secret_token_val"}'),
+        '{"access_token": [REDACTED]}'
+      )
+
+      // Normal prose must NOT be redacted
+      const safeProse = [
+        'The user entered password yesterday in the portal',
+        'This token represents an attendance voucher for CS101',
+        'Meeting scheduled at the Secretariat conference room',
+        'Public key cryptography is enabled',
+      ]
+      for (const phrase of safeProse) {
+        assert.equal(
+          sanitizeDiagnosticString(phrase),
+          phrase,
+          `Normal prose "${phrase}" must not be altered`
+        )
+      }
     })
   })
 })

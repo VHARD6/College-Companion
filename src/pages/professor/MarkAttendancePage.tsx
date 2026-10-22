@@ -375,6 +375,18 @@ export default function MarkAttendancePage() {
     setSearchParams({ assignmentId: String(newAssignmentId) })
   }
 
+  // Handle auth expired navigation with explicit confirmation
+  const handleAuthExpiredSignIn = () => {
+    const confirmationText = sessionId
+      ? 'Your unsaved changes will be lost if you leave. Any previously saved drafts will remain intact. Leave to sign in now?'
+      : 'Your unsaved attendance marks will be lost if you leave. Leave to sign in now?'
+
+    const confirmed = window.confirm(confirmationText)
+    if (confirmed) {
+      navigate('/login')
+    }
+  }
+
   // Handle wizard step back navigation
   const handleBack = () => {
     setSaveAuthError(null)
@@ -385,7 +397,11 @@ export default function MarkAttendancePage() {
     } else if (!rawAssignmentId) {
       setIsSelectingAssignment(true)
     } else {
-      navigate(-1)
+      if (window.history.length > 1 && window.history.state?.idx !== 0) {
+        navigate(-1)
+      } else {
+        navigate('/professor')
+      }
     }
   }
 
@@ -527,7 +543,7 @@ export default function MarkAttendancePage() {
 
       // 2. Actual remote / backend / network / server failure: log once at error-handling point
       logDiagnostic(err)
-      const classified = classifyAttendanceError(err)
+      const classified = classifyAttendanceError(err, 'save')
 
       if (classified.action === 'sign_in') {
         setSaveAuthError(classified.userMessage)
@@ -539,7 +555,7 @@ export default function MarkAttendancePage() {
                 type="button"
                 onClick={() => {
                   toast.dismiss(t.id)
-                  navigate('/login')
+                  handleAuthExpiredSignIn()
                 }}
                 className="px-2.5 py-1 bg-blue-600 text-white text-xs font-bold rounded-lg shrink-0 hover:bg-blue-700 transition-colors"
               >
@@ -843,7 +859,7 @@ export default function MarkAttendancePage() {
                 <Button
                   size="sm"
                   variant="primary"
-                  onClick={() => navigate('/login')}
+                  onClick={handleAuthExpiredSignIn}
                 >
                   Sign In
                 </Button>
@@ -866,7 +882,36 @@ export default function MarkAttendancePage() {
                   Retry
                 </Button>
               </div>
+            ) : classifiedError.action === 'none' ? (
+              <div className="flex gap-2 justify-center pt-1">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleBack}
+                >
+                  ← Go Back
+                </Button>
+              </div>
             ) : null}
+          </div>
+        )}
+
+        {/* Background Records Refetch Error Notice (Non-blocking) */}
+        {!hasError && !!sessionId && isRecordsError && existingRecords !== undefined && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 flex items-center justify-between gap-3 text-xs text-amber-800">
+            <div className="flex items-center gap-2">
+              <AlertCircle size={16} className="text-amber-600 shrink-0" />
+              <span>Failed to refresh saved attendance records. Your current screen marks are preserved.</span>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="shrink-0 bg-white"
+              onClick={() => refetchRecords()}
+            >
+              <RefreshCw size={12} className="mr-1" />
+              Retry
+            </Button>
           </div>
         )}
 
@@ -1250,7 +1295,7 @@ export default function MarkAttendancePage() {
                 <Button
                   size="sm"
                   variant="primary"
-                  onClick={() => navigate('/login')}
+                  onClick={handleAuthExpiredSignIn}
                 >
                   Sign In
                 </Button>
