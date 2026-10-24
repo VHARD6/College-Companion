@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
+import { logTimetableDiagnostic } from '../../lib/errors'
 import { useAuth } from '../../hooks/useAuth'
 import TopBar from '../../components/ui/TopBar'
 import Card from '../../components/ui/Card'
@@ -96,7 +97,10 @@ export default function ProfessorHome() {
         .eq('weekday', weekday)
         .order('start_time')
 
-      if (sErr) throw sErr
+      if (sErr) {
+        logTimetableDiagnostic('professor_today_slots', sErr, 'professor_today_slots')
+        throw sErr
+      }
       if (!slots || slots.length === 0) return []
 
       // Check if attendance session was already recorded today for each assignment
@@ -106,7 +110,10 @@ export default function ProfessorHome() {
         .in('teaching_assignment_id', assignmentIds)
         .eq('date', today)
 
-      if (sessErr) throw sessErr
+      if (sessErr) {
+        logTimetableDiagnostic('professor_today_sessions', sessErr, 'professor_today_sessions')
+        throw sessErr
+      }
 
       const sessionMap = new Map(sessions?.map(s => [s.teaching_assignment_id, s]) ?? [])
       const assignmentMap = new Map(assignments!.map(a => [a.id, a]))

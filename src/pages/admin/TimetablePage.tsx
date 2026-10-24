@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
+import { logTimetableDiagnostic } from '../../lib/errors'
 import TopBar from '../../components/ui/TopBar'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
@@ -8,10 +9,12 @@ import Select from '../../components/ui/Select'
 import Spinner from '../../components/ui/Spinner'
 import toast from 'react-hot-toast'
 import { WEEKDAY_FULL, formatTime } from '../../lib/utils'
-import { Trash2 } from 'lucide-react'
+import { Trash2, AlertCircle, RefreshCw, LayoutGrid, ListFilter } from 'lucide-react'
+import TimetableStudioView from './TimetableStudioView'
 
 export default function TimetablePage() {
   const queryClient = useQueryClient()
+  const [activeTab, setActiveTab] = useState<'studio' | 'legacy'>('studio')
   const [assignmentId, setAssignmentId] = useState('')
   const [weekday, setWeekday] = useState('0')
   const [startTime, setStartTime] = useState('09:00')
@@ -22,7 +25,7 @@ export default function TimetablePage() {
   const { data: assignments } = useQuery({
     queryKey: ['assignments-for-timetable'],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('teaching_assignments')
         .select(`
           id,
@@ -31,15 +34,25 @@ export default function TimetablePage() {
           classes(name),
           batches(name)
         `)
+      if (error) {
+        logTimetableDiagnostic('assignments_for_timetable', error, 'admin_assignments')
+        throw error
+      }
       return data ?? []
     },
   })
 
   // Fetch all timetable slots
-  const { data: slots, isLoading } = useQuery({
+  const {
+    data: slots,
+    isLoading,
+    isError: isSlotsError,
+    error: slotsError,
+    refetch: refetchSlots,
+  } = useQuery({
     queryKey: ['all-timetable-slots'],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('timetable_slots')
         .select(`
           id,
@@ -57,6 +70,16 @@ export default function TimetablePage() {
         `)
         .order('weekday')
         .order('start_time')
+
+      if (error) {
+        logTimetableDiagnostic('all_timetable_slots', error, 'admin_all_slots')
+        const err: any = new Error(error.message)
+        err.stage = 'admin_all_slots'
+        err.code = error.code
+        err.details = error.details
+        err.hint = error.hint
+        throw err
+      }
       return data ?? []
     },
   })
@@ -111,10 +134,43 @@ export default function TimetablePage() {
     <div className="min-h-screen bg-gray-50 pb-20">
       <TopBar title="Timetable Management" showBack />
 
-      <div className="p-4 space-y-4 max-w-2xl mx-auto">
-        {/* Add Slot Card */}
-        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm space-y-3">
-          <h3 className="font-bold text-gray-900 text-sm">Schedule Class Slot</h3>
+      <div className="p-4 max-w-6xl mx-auto space-y-4">
+        {/* Navigation Tabs */}
+        <div className="flex bg-gray-200/70 p-1 rounded-xl max-w-md">
+          <button
+            type="button"
+            onClick={() => setActiveTab('studio')}
+            className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-bold transition-all ${
+              activeTab === 'studio'
+                ? 'bg-white text-blue-600 shadow-xs'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <LayoutGrid size={15} />
+            Timetable Studio
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('legacy')}
+            className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-bold transition-all ${
+              activeTab === 'legacy'
+                ? 'bg-white text-blue-600 shadow-xs'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <ListFilter size={15} />
+            Weekly Slots (Legacy)
+          </button>
+        </div>
+
+        {activeTab === 'studio' ? (
+          <TimetableStudioView />
+        ) : (
+          <div className="space-y-4 max-w-2xl">
+            {/* Add Slot Card */}
+            <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm space-y-3">
+              <h3 className="font-bold text-gray-900 text-sm">Schedule Class Slot</h3>
 
           <Select
             label="Teaching Assignment"
@@ -173,6 +229,49 @@ export default function TimetablePage() {
         {/* Timetable View */}
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner className="h-8 w-8" /></div>
+        ) : isSlotsError ? (
+          <div className="bg-red-50 border border-red-200 rounded-2xl p-4 space-y-3">
+            <div className="flex items-center gap-2 text-red-800">
+              <AlertCircle size={20} className="text-red-500 shrink-0" />
+              <p className="font-semibold text-sm">Failed to load timetable slots</p>
+            </div>
+            <div className="bg-white/90 rounded-xl p-3 border border-red-100 space-y-1.5 text-left text-xs">
+              <div>
+                <span className="font-semibold text-gray-700">Failed Operation: </span>
+                <span className="font-medium text-red-700">Loading all timetable slots (admin query)</span>
+              </div>
+              {(slotsError as any)?.code && (
+                <div>
+                  <span className="font-semibold text-gray-700">PostgreSQL / API Code: </span>
+                  <span className="font-mono text-gray-900 bg-gray-100 px-1 py-0.5 rounded">
+                    {(slotsError as any).code}
+                  </span>
+                </div>
+              )}
+              <div>
+                <span className="font-semibold text-gray-700">Message: </span>
+                <span className="text-red-600">{(slotsError as any)?.message || 'Database query error'}</span>
+              </div>
+              {(slotsError as any)?.details && (
+                <div>
+                  <span className="font-semibold text-gray-700">Details: </span>
+                  <span className="text-gray-600 font-mono text-[11px]">{(slotsError as any).details}</span>
+                </div>
+              )}
+              {(slotsError as any)?.hint && (
+                <div>
+                  <span className="font-semibold text-gray-700">Hint: </span>
+                  <span className="text-gray-600 font-mono text-[11px]">{(slotsError as any).hint}</span>
+                </div>
+              )}
+            </div>
+            <div className="text-center pt-1">
+              <Button size="sm" variant="outline" onClick={() => refetchSlots()}>
+                <RefreshCw size={14} className="mr-1.5" />
+                Retry
+              </Button>
+            </div>
+          </div>
         ) : Object.keys(slotsByDay).length === 0 ? (
           <p className="text-center text-gray-400 py-8 text-sm">No timetable slots created yet</p>
         ) : (
@@ -225,6 +324,8 @@ export default function TimetablePage() {
                 </div>
               </div>
             ))}
+          </div>
+        )}
           </div>
         )}
       </div>

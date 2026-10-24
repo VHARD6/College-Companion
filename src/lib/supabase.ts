@@ -1,8 +1,8 @@
 import { createClient } from '@supabase/supabase-js'
 
 // Loaded from environment variables (e.g. .env.local)
-const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string) || ''
-const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || ''
+const supabaseUrl = (import.meta.env?.VITE_SUPABASE_URL as string) || ''
+const supabaseAnonKey = (import.meta.env?.VITE_SUPABASE_ANON_KEY as string) || ''
 
 export interface SupabaseConfigStatus {
   isValid: boolean

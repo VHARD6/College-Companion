@@ -422,3 +422,50 @@ export function logDiagnostic(error: unknown): void {
   }
 }
 
+export interface TimetableDiagnosticPayload {
+  operation: string
+  stage?: string
+  code?: string | null
+  message?: string | null
+  details?: string | null
+  hint?: string | null
+}
+
+/**
+ * Diagnostic logger specifically for timetable queries.
+ * Logs structured error diagnostics (operation, stage, code, message, details, hint)
+ * while ensuring no tokens, credentials, passwords, or PII are logged.
+ */
+export function logTimetableDiagnostic(
+  operation: string,
+  error: unknown,
+  stage?: string
+): void {
+  if (error === null || error === undefined) return
+  try {
+    const errObj = typeof error === 'object' && error !== null ? (error as Record<string, unknown>) : {}
+    const rawMessage =
+      typeof errObj.message === 'string'
+        ? errObj.message
+        : typeof error === 'string'
+          ? error
+          : ''
+    const rawCode = errObj.code !== undefined && errObj.code !== null ? String(errObj.code) : null
+    const rawDetails = typeof errObj.details === 'string' ? errObj.details : null
+    const rawHint = typeof errObj.hint === 'string' ? errObj.hint : null
+
+    const payload: TimetableDiagnosticPayload = {
+      operation,
+      ...(stage ? { stage } : {}),
+      code: rawCode ? sanitizeDiagnosticString(rawCode) : null,
+      message: rawMessage ? sanitizeDiagnosticString(rawMessage) : null,
+      details: rawDetails ? sanitizeDiagnosticString(rawDetails) : null,
+      hint: rawHint ? sanitizeDiagnosticString(rawHint) : null,
+    }
+
+    console.error(`[TimetableDiagnostic:${operation}] ${JSON.stringify(payload)}`)
+  } catch {
+    // Avoid throwing in diagnostic logger
+  }
+}
+
