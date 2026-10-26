@@ -30,6 +30,7 @@ export default function OfficialCellEditorModal({
   onSave,
 }: Props) {
   const [mode, setMode] = useState<'theory' | 'practical_single' | 'practical_batch' | 'empty'>('theory')
+  const [practicalSpan, setPracticalSpan] = useState<number>(2)
 
   // Theory or single practical fields
   const [subject, setSubject] = useState('')
@@ -48,13 +49,21 @@ export default function OfficialCellEditorModal({
   useEffect(() => {
     if (!isOpen) return
 
-    if (!initialData || initialData.type === 'empty') {
+    if (!initialData || initialData.type === 'empty' || initialData.text === '-') {
       setMode('empty')
       setSubject('')
       setProfessorAbbr('')
       setRoom('')
+      setB1Subject('')
+      setB1ProfAbbr('')
+      setB1Room('')
+      setB2Subject('')
+      setB2ProfAbbr('')
+      setB2Room('')
+      setPracticalSpan(2)
     } else if (initialData.type === 'practical') {
       if (initialData.batch1 && initialData.batch2) {
+        setPracticalSpan(initialData.rowSpan ?? 1)
         setMode('practical_batch')
         setB1Subject(initialData.batch1.subject || '')
         setB1ProfAbbr(initialData.batch1.profAbbr || '')
@@ -63,6 +72,7 @@ export default function OfficialCellEditorModal({
         setB2ProfAbbr(initialData.batch2.profAbbr || '')
         setB2Room(initialData.batch2.room || '')
       } else {
+        setPracticalSpan(initialData.rowSpan ?? 2)
         setMode('practical_single')
         setSubject(initialData.subject || '')
         setProfessorAbbr(initialData.professorAbbr || '')
@@ -100,37 +110,59 @@ export default function OfficialCellEditorModal({
     if (mode === 'empty') {
       onSave({ type: 'empty', text: '-' })
     } else if (mode === 'practical_batch') {
+      const cleanB1Subj = b1Subject.trim()
+      const cleanB2Subj = b2Subject.trim()
+
+      if (!cleanB1Subj && !cleanB2Subj) {
+        onSave({ type: 'empty', text: '-' })
+        onClose()
+        return
+      }
+
       const batch1: TimetablePracticalBatch = {
-        subject: b1Subject,
-        profAbbr: b1ProfAbbr,
-        room: b1Room,
+        subject: cleanB1Subj,
+        profAbbr: b1ProfAbbr.trim(),
+        room: b1Room.trim(),
       }
       const batch2: TimetablePracticalBatch = {
-        subject: b2Subject,
-        profAbbr: b2ProfAbbr,
-        room: b2Room,
+        subject: cleanB2Subj,
+        profAbbr: b2ProfAbbr.trim(),
+        room: b2Room.trim(),
       }
       onSave({
         type: 'practical',
         batch1,
         batch2,
-        rowSpan: 1,
+        rowSpan: practicalSpan,
       })
     } else if (mode === 'practical_single') {
+      const cleanSubj = subject.trim()
+      if (!cleanSubj || cleanSubj === '-') {
+        onSave({ type: 'empty', text: '-' })
+        onClose()
+        return
+      }
+
       onSave({
         type: 'practical',
-        subject,
-        professorAbbr,
-        room,
-        rowSpan: 2,
-        text: `${subject} [${professorAbbr}] Practical\n[${room}]`,
+        subject: cleanSubj,
+        professorAbbr: professorAbbr.trim() || undefined,
+        room: room.trim() || undefined,
+        rowSpan: practicalSpan,
       })
     } else {
+      const cleanSubj = subject.trim()
+      if (!cleanSubj || cleanSubj === '-') {
+        onSave({ type: 'empty', text: '-' })
+        onClose()
+        return
+      }
+
       onSave({
         type: 'theory',
-        subject,
-        professorAbbr,
-        room,
+        subject: cleanSubj,
+        professorAbbr: professorAbbr.trim() || undefined,
+        room: room.trim() || undefined,
         rowSpan: 1,
       })
     }
@@ -163,7 +195,7 @@ export default function OfficialCellEditorModal({
                 type="button"
                 onClick={() => setMode('theory')}
                 className={`py-2 px-3 rounded-xl border text-xs font-semibold text-center transition-colors ${
-                  mode === 'theory' ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-50 text-gray-700 border-gray-200'
+                  mode === 'theory' ? 'bg-blue-600 text-white border-blue-600 shadow-xs' : 'bg-gray-50 text-gray-700 border-gray-200'
                 }`}
               >
                 Theory Lecture
@@ -172,16 +204,19 @@ export default function OfficialCellEditorModal({
                 type="button"
                 onClick={() => setMode('practical_single')}
                 className={`py-2 px-3 rounded-xl border text-xs font-semibold text-center transition-colors ${
-                  mode === 'practical_single' ? 'bg-pink-600 text-white border-pink-600' : 'bg-gray-50 text-gray-700 border-gray-200'
+                  mode === 'practical_single' ? 'bg-pink-600 text-white border-pink-600 shadow-xs' : 'bg-gray-50 text-gray-700 border-gray-200'
                 }`}
               >
-                Practical (2-Period)
+                Practical (Single)
               </button>
               <button
                 type="button"
-                onClick={() => setMode('practical_batch')}
+                onClick={() => {
+                  setMode('practical_batch')
+                  if (!initialData?.rowSpan) setPracticalSpan(1)
+                }}
                 className={`py-2 px-3 rounded-xl border text-xs font-semibold text-center transition-colors ${
-                  mode === 'practical_batch' ? 'bg-purple-600 text-white border-purple-600' : 'bg-gray-50 text-gray-700 border-gray-200'
+                  mode === 'practical_batch' ? 'bg-purple-600 text-white border-purple-600 shadow-xs' : 'bg-gray-50 text-gray-700 border-gray-200'
                 }`}
               >
                 Practical (Batch Split)
@@ -190,13 +225,43 @@ export default function OfficialCellEditorModal({
                 type="button"
                 onClick={() => setMode('empty')}
                 className={`py-2 px-3 rounded-xl border text-xs font-semibold text-center transition-colors ${
-                  mode === 'empty' ? 'bg-gray-700 text-white border-gray-700' : 'bg-gray-50 text-gray-700 border-gray-200'
+                  mode === 'empty' ? 'bg-gray-700 text-white border-gray-700 shadow-xs' : 'bg-gray-50 text-gray-700 border-gray-200'
                 }`}
               >
-                Free Slot (-)
+                Free Period (-)
               </button>
             </div>
           </div>
+
+          {/* Practical Duration Span selector */}
+          {(mode === 'practical_single' || mode === 'practical_batch') && (
+            <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3 flex items-center justify-between">
+              <div>
+                <span className="text-xs font-bold text-amber-900 block">Practical Duration</span>
+                <span className="text-[11px] text-amber-700">1 Period for batch splits or 2 Periods for spanning labs</span>
+              </div>
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setPracticalSpan(1)}
+                  className={`px-2.5 py-1 text-xs rounded-lg font-semibold border ${
+                    practicalSpan === 1 ? 'bg-amber-600 text-white border-amber-600' : 'bg-white text-gray-700 border-gray-300'
+                  }`}
+                >
+                  1 Period
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPracticalSpan(2)}
+                  className={`px-2.5 py-1 text-xs rounded-lg font-semibold border ${
+                    practicalSpan === 2 ? 'bg-amber-600 text-white border-amber-600' : 'bg-white text-gray-700 border-gray-300'
+                  }`}
+                >
+                  2 Periods
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Theory or Single Practical Form */}
           {(mode === 'theory' || mode === 'practical_single') && (
@@ -256,7 +321,7 @@ export default function OfficialCellEditorModal({
 
               {mode === 'practical_single' && (
                 <p className="text-xs text-pink-700 bg-pink-50 p-2 rounded-lg font-medium">
-                  ✓ Spans 2 consecutive periods with official pink highlight.
+                  ✓ Formats as official practical with pink highlight.
                 </p>
               )}
             </div>
@@ -318,7 +383,7 @@ export default function OfficialCellEditorModal({
           {/* Free Slot Info */}
           {mode === 'empty' && (
             <p className="text-gray-500 text-xs italic py-2">
-              This cell will be marked as free slot with a centered dash (-).
+              This cell will be marked as a free period with the official centered dash (-).
             </p>
           )}
         </div>

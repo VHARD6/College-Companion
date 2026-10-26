@@ -390,4 +390,108 @@ describe('Timetable Maker & Image Persistence Suite', () => {
       assert.strictEqual(dates[1].timetable_date, '2026-10-21')
     })
   })
+
+  describe('Official Visual Fidelity & Geometry Validation', () => {
+    it('enforces exact reference column proportions for fixed table layout', async () => {
+      const { OFFICIAL_TIMETABLE_GEOMETRY } = await import('../src/lib/timetableCellFormatter.ts')
+      assert.strictEqual(OFFICIAL_TIMETABLE_GEOMETRY.timeColRatio, 174 / 900)
+      assert.strictEqual(OFFICIAL_TIMETABLE_GEOMETRY.branchColRatio, 181.5 / 900)
+
+      // Total of 1 Time column + 4 branch columns must equal 100% (1.0)
+      const totalRatio = OFFICIAL_TIMETABLE_GEOMETRY.timeColRatio + 4 * OFFICIAL_TIMETABLE_GEOMETRY.branchColRatio
+      assert.strictEqual(Math.round(totalRatio * 1000), 1000)
+    })
+
+    it('formats empty cells and free periods with dash and no empty brackets', async () => {
+      const { formatCellContent } = await import('../src/lib/timetableCellFormatter.ts')
+
+      // Undefined cell
+      const res1 = formatCellContent(undefined)
+      assert.deepStrictEqual(res1.lines, ['-'])
+      assert.strictEqual(res1.isDash, true)
+
+      // Empty type
+      const res2 = formatCellContent({ type: 'empty', text: '-' })
+      assert.deepStrictEqual(res2.lines, ['-'])
+      assert.strictEqual(res2.isDash, true)
+
+      // Blank subject
+      const res3 = formatCellContent({ type: 'theory', subject: '' })
+      assert.deepStrictEqual(res3.lines, ['-'])
+      assert.strictEqual(res3.isDash, true)
+    })
+
+    it('never renders empty brackets for missing faculty abbreviation or room', async () => {
+      const { formatCellContent } = await import('../src/lib/timetableCellFormatter.ts')
+
+      // Theory with only subject
+      const res1 = formatCellContent({ type: 'theory', subject: 'CHEM' })
+      assert.deepStrictEqual(res1.lines, ['CHEM'])
+      assert.ok(!res1.lines[0].includes('[]'))
+      assert.ok(!res1.lines[0].includes('[undefined]'))
+
+      // Theory with subject and prof
+      const res2 = formatCellContent({ type: 'theory', subject: 'CHEM', professorAbbr: 'PSS' })
+      assert.deepStrictEqual(res2.lines, ['CHEM [PSS]'])
+      assert.ok(!res2.lines[0].includes('[]'))
+
+      // Theory with all fields
+      const res3 = formatCellContent({ type: 'theory', subject: 'CHEM', professorAbbr: 'PSS', room: '701' })
+      assert.deepStrictEqual(res3.lines, ['CHEM [PSS] [701]'])
+    })
+
+    it('formats batch-split practical with numbered lines and no empty brackets', async () => {
+      const { formatCellContent } = await import('../src/lib/timetableCellFormatter.ts')
+
+      const res = formatCellContent({
+        type: 'practical',
+        batch1: { subject: 'CHEM', profAbbr: 'PSS', room: '603' },
+        batch2: { subject: 'EM', profAbbr: 'RYP', room: 'EM LAB' },
+      })
+
+      assert.strictEqual(res.isBatchSplit, true)
+      assert.strictEqual(res.lines.length, 2)
+      assert.strictEqual(res.lines[0], '1. CHEM [PSS] [603]')
+      assert.strictEqual(res.lines[1], '2. EM [RYP] [EM LAB]')
+    })
+
+    it('sanitizes legacy or malformed placeholder text like "[] Practical"', async () => {
+      const { formatCellContent } = await import('../src/lib/timetableCellFormatter.ts')
+
+      const res = formatCellContent({
+        type: 'practical',
+        text: '[] Practical\n[]',
+      })
+
+      assert.deepStrictEqual(res.lines, ['-'])
+      assert.strictEqual(res.isDash, true)
+    })
+
+    it('maintains 1-period batch splits and 2-period practical spans in default timetable', () => {
+      const template = createDefaultMasterTimetable('22/10/2026')
+      // 2-period genuine spanning practicals
+      assert.strictEqual(template.cells['1_0'].rowSpan, 2) // CSE:AIML Practical (08.00-10.00)
+      assert.strictEqual(template.cells['7_1'].rowSpan, 2) // ENTC Workshop Practices (01:00-03:00)
+
+      // Single-period batch splits (10:15-11:15)
+      assert.strictEqual(template.cells['4_0'].rowSpan, 1) // CSE:AIML CHEM/EM batch split (10:15-11:15)
+      assert.strictEqual(template.cells['4_0'].batch1?.subject, 'CHEM')
+      assert.strictEqual(template.cells['4_0'].batch2?.subject, 'EM')
+
+      assert.strictEqual(template.cells['4_2'].rowSpan, 1) // COMP PHY/BEEE batch split (10:15-11:15)
+      assert.strictEqual(template.cells['4_2'].batch1?.subject, 'PHY')
+      assert.strictEqual(template.cells['4_2'].batch2?.subject, 'BEEE')
+
+      // Subsequent 11:15-12:15 period intentionally contains free-period dashes
+      assert.strictEqual(template.cells['5_0']?.type, 'empty')
+      assert.strictEqual(template.cells['5_0']?.text, '-')
+      assert.strictEqual(template.cells['5_2']?.type, 'empty')
+      assert.strictEqual(template.cells['5_2']?.text, '-')
+
+      // Other verified free periods
+      assert.strictEqual(template.cells['7_3'].type, 'empty')
+      assert.strictEqual(template.cells['8_2'].type, 'empty')
+      assert.strictEqual(template.cells['8_3'].type, 'empty')
+    })
+  })
 })

@@ -56,22 +56,26 @@ export function createDefaultMasterTimetable(dateStr = '22/10/2026'): MasterTime
       '2_2': { type: 'theory', subject: 'PHY', professorAbbr: 'CDM', room: '701' },
       '2_3': { type: 'theory', subject: 'EM-I', professorAbbr: 'ST', room: '403' },
 
-      // 10:15-11:15
+      // 10:15-11:15: Batch splits occurring within the same one-hour period (rowSpan: 1)
       '4_0': {
         type: 'practical',
+        rowSpan: 1,
         batch1: { subject: 'CHEM', profAbbr: 'PSS', room: '603' },
         batch2: { subject: 'EM', profAbbr: 'RYP', room: 'EM LAB' },
       },
       '4_1': { type: 'theory', subject: 'CS', professorAbbr: 'PP', room: '703' },
       '4_2': {
         type: 'practical',
+        rowSpan: 1,
         batch1: { subject: 'PHY', profAbbr: 'CDM', room: '602' },
         batch2: { subject: 'BEEE', profAbbr: 'ABI', room: '601' },
       },
       '4_3': { type: 'theory', subject: 'EG', professorAbbr: 'AP', room: '403' },
 
-      // 11:15-12:15
+      // 11:15-12:15: Free periods in CSE:AIML and COMP displaying dashes
+      '5_0': { type: 'empty', text: '-' },
       '5_1': { type: 'theory', subject: 'EM-I', professorAbbr: 'ST', room: '703' },
+      '5_2': { type: 'empty', text: '-' },
       '5_3': { type: 'theory', subject: 'BCME', professorAbbr: 'KVK', room: '403' },
 
       // 01:00-02:00
