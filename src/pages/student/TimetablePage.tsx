@@ -14,10 +14,12 @@ import {
   FileText,
   Download,
   Maximize2,
-  X,
   Megaphone,
   CheckCircle2,
+  Loader2,
 } from 'lucide-react'
+import toast from 'react-hot-toast'
+import FullscreenImageViewer from '../../components/timetable/FullscreenImageViewer'
 import {
   fetchPublishedTimetableByDate,
   fetchLatestPublishedTimetable,
@@ -36,6 +38,9 @@ export default function TimetablePage() {
 
   // Fullscreen Zoom Modal State
   const [isFullscreenOpen, setIsFullscreenOpen] = useState(false)
+
+  // Download state
+  const [isDownloading, setIsDownloading] = useState(false)
 
   // 1. Student Enrollment Query
   const {
@@ -162,6 +167,30 @@ export default function TimetablePage() {
     },
     retry: false,
   })
+
+  // Download handler with user feedback
+  const handleDownload = async () => {
+    if (!currentTimetable?.image_url) return
+
+    const filename = `Timetable_${currentTimetable.timetable_date}.png`
+    setIsDownloading(true)
+    const toastId = toast.loading('Preparing timetable download...')
+
+    try {
+      const result = await downloadTimetableImage(currentTimetable.image_url, filename)
+      if (result.aborted) {
+        toast.dismiss(toastId)
+      } else if (result.success) {
+        toast.success(result.message, { id: toastId, duration: 4000 })
+      } else {
+        toast.error(result.message || 'Download could not be completed.', { id: toastId })
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to download timetable image.', { id: toastId })
+    } finally {
+      setIsDownloading(false)
+    }
+  }
 
   // Group slots by weekday for My Schedule
   const byDay = WEEKDAY_FULL.map((day, idx) => ({
@@ -356,11 +385,16 @@ export default function TimetablePage() {
 
                   <button
                     type="button"
-                    onClick={() => downloadTimetableImage(currentTimetable.image_url, `Timetable_${currentTimetable.timetable_date}.png`)}
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-xl transition-colors shadow-xs"
+                    onClick={handleDownload}
+                    disabled={isDownloading}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-60 px-3 py-1.5 rounded-xl transition-colors shadow-xs active:scale-95"
                   >
-                    <Download size={13} />
-                    Download PNG
+                    {isDownloading ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <Download size={13} />
+                    )}
+                    <span>{isDownloading ? 'Saving...' : 'Download PNG'}</span>
                   </button>
                 </div>
               </div>
@@ -384,40 +418,17 @@ export default function TimetablePage() {
             </div>
           )}
 
-          {/* ─── Fullscreen Zoom Modal ──────────────────────────── */}
+          {/* ─── Fullscreen Zoomable Touch Modal ──────────────────── */}
           {isFullscreenOpen && currentTimetable && (
-            <div className="fixed inset-0 z-50 bg-black/95 flex flex-col">
-              <div className="p-3 flex items-center justify-between bg-black/70 text-white border-b border-gray-800">
-                <span className="text-xs font-bold">
-                  Master Timetable ({formatDateForOfficialDisplay(currentTimetable.timetable_date)})
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => downloadTimetableImage(currentTimetable.image_url, `Timetable_${currentTimetable.timetable_date}.png`)}
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-blue-600 px-3 py-1.5 rounded-lg"
-                  >
-                    <Download size={13} />
-                    Download
-                  </button>
-                  <button
-                    onClick={() => setIsFullscreenOpen(false)}
-                    className="p-1 rounded-lg text-gray-300 hover:text-white"
-                  >
-                    <X size={22} />
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex-1 overflow-auto p-2 flex items-center justify-center">
-                <img
-                  src={currentTimetable.image_url}
-                  alt="Fullscreen Timetable"
-                  className="max-w-none w-auto max-h-none select-none"
-                  style={{ minWidth: '950px' }}
-                />
-              </div>
-            </div>
+            <FullscreenImageViewer
+              isOpen={isFullscreenOpen}
+              imageUrl={currentTimetable.image_url}
+              title={`Master Timetable (${currentTimetable.class_name})`}
+              dateLabel={`${formatDateForOfficialDisplay(currentTimetable.timetable_date)} · Semester ${currentTimetable.semester}`}
+              onClose={() => setIsFullscreenOpen(false)}
+              onDownload={handleDownload}
+              isDownloading={isDownloading}
+            />
           )}
         </div>
       ) : (

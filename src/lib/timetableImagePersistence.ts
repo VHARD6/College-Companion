@@ -1,6 +1,9 @@
 import { supabase } from './supabase.ts'
 import type { MasterTimetableGridData, PublishedMasterTimetable } from '../types/timetableMaker.ts'
 import { renderTimetableToBlob } from './timetableImageRenderer.ts'
+import { Capacitor } from '@capacitor/core'
+import { Filesystem, Directory } from '@capacitor/filesystem'
+import { Share } from '@capacitor/share'
 
 export interface PublishTimetableParams {
   gridData: MasterTimetableGridData
@@ -301,25 +304,212 @@ export async function fetchPublishedDates(
   return data ?? []
 }
 
+export interface DownloadResult {
+  success: boolean
+  method: 'native-save' | 'native-share' | 'web-share' | 'browser-download' | 'tab-opened'
+  message: string
+  path?: string
+  aborted?: boolean
+}
+
 /**
- * Universal download helper that handles signed URLs, blobs, cross-origin restrictions,
- * and Android/desktop downloads cleanly.
+ * Converts a Blob to a base64 encoded string across browsers and environments.
  */
-export async function downloadTimetableImage(imageUrl: string, filename: string): Promise<void> {
+export async function blobToBase64(blob: Blob): Promise<string> {
+  const buffer = await blob.arrayBuffer()
+  const maybeBuffer = (globalThis as any).Buffer
+  if (typeof maybeBuffer !== 'undefined' && typeof maybeBuffer.from === 'function') {
+    return maybeBuffer.from(buffer).toString('base64')
+  }
+  let binary = ''
+  const bytes = new Uint8Array(buffer)
+  const len = bytes.byteLength
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i])
+  }
+  return btoa(binary)
+}
+
+export interface NativeDownloadAdapter {
+  isNativePlatform?: () => boolean
+  writeFile?: (options: { path: string; data: string; directory: any; recursive?: boolean }) => Promise<{ uri: string }>
+  share?: (options: { title?: string; text?: string; url?: string; dialogTitle?: string }) => Promise<any>
+}
+
+/**
+ * Universal download and save helper that reliably saves timetable images across:
+ * 1. Android Capacitor APK (using native Filesystem with scoped Documents and MediaScanner, falling back to Share)
+ * 2. iOS Safari (using Web Share API with File object so users can "Save Image" to Photos or "Save to Files")
+ * 3. Android Chrome (using Web Share or standard Blob anchor download)
+ * 4. Desktop browsers (standard Blob anchor download)
+ * 5. Fallback for restricted WebViews (opening in a new tab with long-press save instructions)
+ */
+export async function downloadTimetableImage(
+  imageUrl: string,
+  filename: string,
+  nativeAdapter?: NativeDownloadAdapter
+): Promise<DownloadResult> {
+  if (!imageUrl) {
+    throw new Error('No timetable image URL available for download.')
+  }
+
+  const isNative = nativeAdapter?.isNativePlatform ? nativeAdapter.isNativePlatform() : Capacitor.isNativePlatform()
+  const writeFileFn = nativeAdapter?.writeFile ?? Filesystem.writeFile
+  const shareFn = nativeAdapter?.share ?? Share.share
+
+  // 1. Android / iOS Native Capacitor flow
+  if (isNative) {
+    const res = await fetch(imageUrl)
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        throw new Error('Timetable download link has expired. Please refresh the page.')
+      }
+      if (res.status === 404) {
+        throw new Error('Timetable image file was not found in storage.')
+      }
+      throw new Error(`Failed to download image (HTTP ${res.status})`)
+    }
+    const blob = await res.blob()
+    const base64Data = await blobToBase64(blob)
+
+    // Attempt direct save to user-accessible Documents directory with MediaScanner
+    try {
+      const writeResult = await writeFileFn({
+        path: filename,
+        data: base64Data,
+        directory: Directory.Documents,
+        recursive: true,
+      })
+      return {
+        success: true,
+        method: 'native-save',
+        message: `Saved to Documents: ${filename}`,
+        path: writeResult.uri,
+      }
+    } catch (fsErr: any) {
+      // Fallback: write to app Cache directory and present native Share/Save sheet
+      try {
+        const cacheResult = await writeFileFn({
+          path: filename,
+          data: base64Data,
+          directory: Directory.Cache,
+        })
+        await shareFn({
+          title: filename,
+          url: cacheResult.uri,
+          dialogTitle: 'Save or Share Timetable',
+        })
+        return {
+          success: true,
+          method: 'native-share',
+          message: 'Opened native share sheet to save timetable',
+          path: cacheResult.uri,
+        }
+      } catch (shareErr: any) {
+        throw new Error(`Failed to save image on device: ${fsErr?.message || shareErr?.message || 'Storage error'}`)
+      }
+    }
+  }
+
+  // 2. Mobile Web & Desktop Web flow
+  let blob: Blob
   try {
     const res = await fetch(imageUrl)
-    if (!res.ok) throw new Error(`HTTP error ${res.status}`)
-    const blob = await res.blob()
-    const blobUrl = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = blobUrl
-    a.download = filename
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(blobUrl)
-  } catch {
-    // Direct window open fallback
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        throw new Error('Timetable download link has expired. Please refresh the page.')
+      }
+      if (res.status === 404) {
+        throw new Error('Timetable image file was not found in storage.')
+      }
+      throw new Error(`Failed to download image (HTTP ${res.status})`)
+    }
+    blob = await res.blob()
+  } catch (fetchErr: any) {
+    // If fetch failed due to CORS or offline, fallback to opening URL directly
+    if (typeof window !== 'undefined') {
+      window.open(imageUrl, '_blank')
+      return {
+        success: true,
+        method: 'tab-opened',
+        message: 'Opened image in new tab. Long-press to save.',
+      }
+    }
+    throw fetchErr
+  }
+
+  // 2a. Mobile Web Share API with File (Supported in iOS Safari 15+ and Android Chrome)
+  // Allows iOS users to save directly to Photos via the native "Save Image" option in the share sheet
+  if (
+    typeof navigator !== 'undefined' &&
+    typeof File !== 'undefined' &&
+    typeof navigator.canShare === 'function'
+  ) {
+    try {
+      const file = new File([blob], filename, { type: 'image/png' })
+      if (navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: filename,
+          })
+          return {
+            success: true,
+            method: 'web-share',
+            message: 'Image shared successfully.',
+          }
+        } catch (shareErr: any) {
+          if (shareErr.name === 'AbortError') {
+            return {
+              success: false,
+              aborted: true,
+              method: 'web-share',
+              message: 'Save cancelled by user.',
+            }
+          }
+          // If sharing failed for other reasons, fall through to browser download
+        }
+      }
+    } catch {
+      // Fall through to anchor tag download
+    }
+  }
+
+  // 2b. Standard Browser Blob Download (Desktop & browsers without Web Share)
+  if (typeof document !== 'undefined') {
+    try {
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = blobUrl
+      a.download = filename
+      a.rel = 'noopener'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
+      return {
+        success: true,
+        method: 'browser-download',
+        message: `Downloading ${filename}...`,
+      }
+    } catch {
+      // Fall through to window.open
+    }
+  }
+
+  // 2c. Final fallback: Open image in new window/tab
+  if (typeof window !== 'undefined') {
     window.open(imageUrl, '_blank')
+    return {
+      success: true,
+      method: 'tab-opened',
+      message: 'Opened image in new tab. Long-press to save.',
+    }
+  }
+
+  return {
+    success: false,
+    method: 'browser-download',
+    message: 'Could not complete download in this environment.',
   }
 }
