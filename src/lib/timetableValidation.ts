@@ -45,7 +45,11 @@ export function doPeriodsOverlap(
  * Pure function: no database calls, fully unit-testable.
  */
 export function validateMasterTimetable(context: ValidationContext): TimetableValidationResult {
-  const { periods, columns, entries, professorsById = new Map(), batchesByClassId = new Map() } = context
+  const periods = context?.periods ?? []
+  const columns = context?.columns ?? []
+  const entries = context?.entries ?? []
+  const professorsById = context?.professorsById ?? new Map()
+  const batchesByClassId = context?.batchesByClassId ?? new Map()
 
   const errors: TimetableConflict[] = []
   const warnings: TimetableConflict[] = []
@@ -104,7 +108,7 @@ export function validateMasterTimetable(context: ValidationContext): TimetableVa
 
       const col = entry.column_id ? columnMap.get(entry.column_id) : undefined
 
-      for (const sub of entry.subentries) {
+      for (const sub of (entry.subentries || [])) {
         flatList.push({
           entryId: entry.id,
           entryIndex: entryIdx,

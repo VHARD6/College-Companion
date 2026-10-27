@@ -113,10 +113,25 @@ export function normalizeEmail(email: string): string {
  * Rejects empty values and malformed addresses without artificially restricting valid domains (such as @gmail.com).
  */
 export function validateEmail(email: string): ValidationResult {
+  if (!email || typeof email !== 'string') {
+    return { isValid: false, error: 'Email address cannot be empty.' }
+  }
+
+  // Reject null bytes and control characters
+  // eslint-disable-next-line no-control-regex
+  if (/[\0\x00-\x1F\x7F]/.test(email)) {
+    return { isValid: false, error: 'Email address contains invalid characters.' }
+  }
+
   const normalized = normalizeEmail(email)
 
   if (!normalized) {
     return { isValid: false, error: 'Email address cannot be empty.' }
+  }
+
+  // RFC 5321 length limits: max 254 characters total
+  if (normalized.length > 254) {
+    return { isValid: false, error: 'Email address cannot exceed 254 characters.' }
   }
 
   // Reject internal spaces

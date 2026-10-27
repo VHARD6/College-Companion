@@ -20,9 +20,11 @@ export interface PublishTimetableParams {
 /**
  * Normalizes any date string (e.g. "22/10/2026" or "2026-10-22") to standard YYYY-MM-DD.
  */
-export function normalizeDateToISO(d: string): string {
-  if (d.includes('/')) {
-    const parts = d.split('/')
+export function normalizeDateToISO(d: string | null | undefined): string {
+  if (!d || typeof d !== 'string') return ''
+  const trimmed = d.trim()
+  if (trimmed.includes('/')) {
+    const parts = trimmed.split('/')
     if (parts.length === 3) {
       if (parts[2].length === 4) {
         // DD/MM/YYYY -> YYYY-MM-DD
@@ -30,18 +32,20 @@ export function normalizeDateToISO(d: string): string {
       }
     }
   }
-  return d
+  return trimmed
 }
 
 /**
  * Normalizes YYYY-MM-DD to DD/MM/YYYY for official display.
  */
-export function formatDateForOfficialDisplay(isoDate: string): string {
-  if (isoDate.includes('-')) {
-    const [y, m, d] = isoDate.split('-')
-    if (y && m && d) return `${d}/${m}/${y}`
+export function formatDateForOfficialDisplay(isoDate: string | null | undefined): string {
+  if (!isoDate || typeof isoDate !== 'string') return ''
+  const trimmed = isoDate.trim()
+  if (trimmed.includes('-')) {
+    const [y, m, d] = trimmed.split('-')
+    if (y && m && d && y.length === 4) return `${d.padStart(2, '0')}/${m.padStart(2, '0')}/${y}`
   }
-  return isoDate
+  return trimmed
 }
 
 /**
@@ -337,6 +341,76 @@ export interface NativeDownloadAdapter {
 }
 
 /**
+ * Validates that an image URL uses an allowed, safe scheme.
+ * Prevents protocol-level injection such as javascript:, data:, file:, etc.
+ */
+export function isValidDownloadUrl(url: string | null | undefined): boolean {
+  if (!url || typeof url !== 'string') return false
+  const trimmed = url.trim().toLowerCase()
+  if (
+    trimmed.startsWith('javascript:') ||
+    trimmed.startsWith('data:') ||
+    trimmed.startsWith('file:') ||
+    trimmed.startsWith('vbscript:')
+  ) {
+    return false
+  }
+  return (
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('blob:')
+  )
+}
+
+/**
+ * Sanitizes a filename for download/save operations.
+ * Strips directory traversal (../, ..\), path separators, null bytes,
+ * and dangerous characters. Limits length and ensures a safe extension.
+ */
+export function sanitizeDownloadFilename(rawFilename: string | null | undefined): string {
+  if (!rawFilename || typeof rawFilename !== 'string') {
+    return 'timetable_export.png'
+  }
+
+  // Strip null bytes, non-printable characters, and normalize backslashes
+  let cleaned = rawFilename
+    .replace(/\0/g, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1F\x7F]/g, '')
+    .replace(/\\/g, '/')
+
+  // Retain only basename
+  cleaned = cleaned.split('/').pop() || ''
+
+  // Replace illegal filename characters (< > : " / \ | ? *) with an underscore
+  cleaned = cleaned.replace(/[<>:"/\\|?*]/g, '_')
+
+  // Prevent multiple consecutive dots (directory traversal)
+  cleaned = cleaned.replace(/\.{2,}/g, '.')
+
+  // Strip leading and trailing dots and spaces
+  cleaned = cleaned.trim().replace(/^\.+|\.+$/g, '')
+
+  if (!cleaned) {
+    return 'timetable_export.png'
+  }
+
+  // Ensure safe image extension
+  if (!/\.(png|jpg|jpeg|webp)$/i.test(cleaned)) {
+    cleaned += '.png'
+  }
+
+  // Max 120 characters limit to prevent OS filesystem errors
+  if (cleaned.length > 120) {
+    const extMatch = cleaned.match(/\.[a-zA-Z0-9]+$/)
+    const ext = extMatch ? extMatch[0] : '.png'
+    cleaned = cleaned.substring(0, 120 - ext.length) + ext
+  }
+
+  return cleaned
+}
+
+/**
  * Universal download and save helper that reliably saves timetable images across:
  * 1. Android Capacitor APK (using native Filesystem with scoped Documents and MediaScanner, falling back to Share)
  * 2. iOS Safari (using Web Share API with File object so users can "Save Image" to Photos or "Save to Files")
@@ -349,9 +423,15 @@ export async function downloadTimetableImage(
   filename: string,
   nativeAdapter?: NativeDownloadAdapter
 ): Promise<DownloadResult> {
-  if (!imageUrl) {
+  if (!imageUrl || !imageUrl.trim()) {
     throw new Error('No timetable image URL available for download.')
   }
+
+  if (!isValidDownloadUrl(imageUrl)) {
+    throw new Error('Untrusted or invalid timetable image URL scheme.')
+  }
+
+  const safeFilename = sanitizeDownloadFilename(filename)
 
   const isNative = nativeAdapter?.isNativePlatform ? nativeAdapter.isNativePlatform() : Capacitor.isNativePlatform()
   const writeFileFn = nativeAdapter?.writeFile ?? Filesystem.writeFile
@@ -375,7 +455,7 @@ export async function downloadTimetableImage(
     // Attempt direct save to user-accessible Documents directory with MediaScanner
     try {
       const writeResult = await writeFileFn({
-        path: filename,
+        path: safeFilename,
         data: base64Data,
         directory: Directory.Documents,
         recursive: true,
@@ -383,19 +463,19 @@ export async function downloadTimetableImage(
       return {
         success: true,
         method: 'native-save',
-        message: `Saved to Documents: ${filename}`,
+        message: `Saved to Documents: ${safeFilename}`,
         path: writeResult.uri,
       }
     } catch (fsErr: any) {
       // Fallback: write to app Cache directory and present native Share/Save sheet
       try {
         const cacheResult = await writeFileFn({
-          path: filename,
+          path: safeFilename,
           data: base64Data,
           directory: Directory.Cache,
         })
         await shareFn({
-          title: filename,
+          title: safeFilename,
           url: cacheResult.uri,
           dialogTitle: 'Save or Share Timetable',
         })
@@ -428,7 +508,7 @@ export async function downloadTimetableImage(
   } catch (fetchErr: any) {
     // If fetch failed due to CORS or offline, fallback to opening URL directly
     if (typeof window !== 'undefined') {
-      window.open(imageUrl, '_blank')
+      window.open(imageUrl, '_blank', 'noopener,noreferrer')
       return {
         success: true,
         method: 'tab-opened',
@@ -446,12 +526,12 @@ export async function downloadTimetableImage(
     typeof navigator.canShare === 'function'
   ) {
     try {
-      const file = new File([blob], filename, { type: 'image/png' })
+      const file = new File([blob], safeFilename, { type: 'image/png' })
       if (navigator.canShare({ files: [file] })) {
         try {
           await navigator.share({
             files: [file],
-            title: filename,
+            title: safeFilename,
           })
           return {
             success: true,
@@ -481,7 +561,7 @@ export async function downloadTimetableImage(
       const blobUrl = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = blobUrl
-      a.download = filename
+      a.download = safeFilename
       a.rel = 'noopener'
       document.body.appendChild(a)
       a.click()
@@ -490,7 +570,7 @@ export async function downloadTimetableImage(
       return {
         success: true,
         method: 'browser-download',
-        message: `Downloading ${filename}...`,
+        message: `Downloading ${safeFilename}...`,
       }
     } catch {
       // Fall through to window.open
@@ -499,7 +579,7 @@ export async function downloadTimetableImage(
 
   // 2c. Final fallback: Open image in new window/tab
   if (typeof window !== 'undefined') {
-    window.open(imageUrl, '_blank')
+    window.open(imageUrl, '_blank', 'noopener,noreferrer')
     return {
       success: true,
       method: 'tab-opened',

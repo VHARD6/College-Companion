@@ -224,8 +224,12 @@ export default function TimetableStudioView() {
             <Button
               variant="primary"
               size="sm"
-              onClick={() => publishMutation.mutate()}
+              onClick={() => {
+                if (publishMutation.isPending || isGeneratingPreview) return
+                publishMutation.mutate()
+              }}
               loading={publishMutation.isPending}
+              disabled={publishMutation.isPending || isGeneratingPreview}
             >
               <Send size={14} className="mr-1.5" />
               Publish Timetable

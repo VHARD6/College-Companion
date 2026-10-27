@@ -270,7 +270,11 @@ export default function TeachingAssignmentsPage() {
           <Button
             className="w-full"
             loading={addAssignmentMutation.isPending}
-            onClick={() => addAssignmentMutation.mutate()}
+            disabled={addAssignmentMutation.isPending || !professorId || !subjectId || !classId}
+            onClick={() => {
+              if (addAssignmentMutation.isPending || !professorId || !subjectId || !classId) return
+              addAssignmentMutation.mutate()
+            }}
           >
             Create Assignment
           </Button>

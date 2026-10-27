@@ -29,6 +29,12 @@ export function calculateFitDimensions(
   natural: Dimensions
 ): Dimensions {
   if (
+    !container ||
+    !natural ||
+    !Number.isFinite(container.width) ||
+    !Number.isFinite(container.height) ||
+    !Number.isFinite(natural.width) ||
+    !Number.isFinite(natural.height) ||
     container.width <= 0 ||
     container.height <= 0 ||
     natural.width <= 0 ||
@@ -58,7 +64,16 @@ export function calculatePanBounds(
   fitted: Dimensions,
   zoom: number
 ): PanBounds {
-  if (zoom <= 1.001) {
+  if (
+    !container ||
+    !fitted ||
+    !Number.isFinite(zoom) ||
+    zoom <= 1.001 ||
+    !Number.isFinite(container.width) ||
+    !Number.isFinite(container.height) ||
+    !Number.isFinite(fitted.width) ||
+    !Number.isFinite(fitted.height)
+  ) {
     return { minX: 0, maxX: 0, minY: 0, maxY: 0 }
   }
 
@@ -80,7 +95,8 @@ export function calculatePanBounds(
  * Clamps a numeric value between minimum and maximum bounds.
  */
 export function clamp(val: number, min: number, max: number): number {
-  if (isNaN(val)) return min
+  if (isNaN(val) || isNaN(min)) return isNaN(min) ? 0 : min
+  if (isNaN(max)) return val
   if (min > max) return min
   return Math.max(min, Math.min(val, max))
 }
@@ -89,6 +105,16 @@ export function clamp(val: number, min: number, max: number): number {
  * Calculates Euclidean distance between two 2D points.
  */
 export function calculateDistance(p1: Point, p2: Point): number {
+  if (
+    !p1 ||
+    !p2 ||
+    !Number.isFinite(p1.x) ||
+    !Number.isFinite(p1.y) ||
+    !Number.isFinite(p2.x) ||
+    !Number.isFinite(p2.y)
+  ) {
+    return 0
+  }
   return Math.hypot(p2.x - p1.x, p2.y - p1.y)
 }
 
@@ -96,8 +122,13 @@ export function calculateDistance(p1: Point, p2: Point): number {
  * Calculates midpoint between two 2D points.
  */
 export function calculateMidpoint(p1: Point, p2: Point): Point {
+  if (!p1 || !p2) return { x: 0, y: 0 }
+  const x1 = Number.isFinite(p1.x) ? p1.x : 0
+  const y1 = Number.isFinite(p1.y) ? p1.y : 0
+  const x2 = Number.isFinite(p2.x) ? p2.x : 0
+  const y2 = Number.isFinite(p2.y) ? p2.y : 0
   return {
-    x: (p1.x + p2.x) / 2,
-    y: (p1.y + p2.y) / 2,
+    x: (x1 + x2) / 2,
+    y: (y1 + y2) / 2,
   }
 }

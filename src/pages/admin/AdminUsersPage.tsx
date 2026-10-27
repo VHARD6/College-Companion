@@ -10,10 +10,10 @@ import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import toast from 'react-hot-toast'
 import { UserPlus, FileSpreadsheet, Search, Edit3, X, AlertCircle, RefreshCw } from 'lucide-react'
-import { normalizeEmail, validateEmail } from '../../lib/authUtils'
+import { normalizeEmail, validateEmail, validatePassword } from '../../lib/authUtils'
 import type { Role } from '../../types'
 
-import { extractSingleRelation } from '../../lib/adminUtils'
+import { extractSingleRelation, parseCsvInput, evaluateCsvImportOutcome } from '../../lib/adminUtils'
 
 interface NewUserForm {
   name: string
@@ -355,30 +355,50 @@ export default function AdminUsersPage() {
 
   // Bulk CSV Import (Strictly through secure Edge Function)
   async function handleCsvImport() {
-    if (!csvText.trim()) {
-      toast.error('Please enter CSV data')
+    if (isImporting) return
+
+    const parsed = parseCsvInput(csvText, 500)
+    if (parsed.error) {
+      toast.error(parsed.error)
       return
     }
 
-    const lines = csvText.trim().split('\n')
-    if (lines.length <= 1) {
-      toast.error('CSV must contain a header and at least one data row')
-      return
-    }
+    const { headers, rows } = parsed
+    // Match headers dynamically or fall back to standard positional indexes
+    const nameIdx = headers.indexOf('name') !== -1 ? headers.indexOf('name') : 0
+    const emailIdx = headers.indexOf('email') !== -1 ? headers.indexOf('email') : 1
+    const passwordIdx = headers.indexOf('password') !== -1 ? headers.indexOf('password') : 2
+    const rollIdx = headers.indexOf('roll_no') !== -1 ? headers.indexOf('roll_no') : (headers.indexOf('rollno') !== -1 ? headers.indexOf('rollno') : 3)
+    const classIdx = headers.indexOf('class_name') !== -1 ? headers.indexOf('class_name') : (headers.indexOf('class') !== -1 ? headers.indexOf('class') : 4)
+    const batchIdx = headers.indexOf('batch_name') !== -1 ? headers.indexOf('batch_name') : (headers.indexOf('batch') !== -1 ? headers.indexOf('batch') : 5)
 
     setIsImporting(true)
     let successCount = 0
     let errorCount = 0
 
     // Header: name,email,password,roll_no,class_name,batch_name
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim()
-      if (!line) continue
+    for (let i = 0; i < rows.length; i++) {
+      const parts = rows[i]
+      const name = parts[nameIdx]?.trim() || ''
+      const email = parts[emailIdx]?.trim() || ''
+      const password = parts[passwordIdx] || ''
+      const rawRollNo = parts[rollIdx]?.trim() || ''
+      const class_name = parts[classIdx]?.trim() || ''
+      const batch_name = parts[batchIdx]?.trim() || ''
 
-      const parts = line.split(',').map(p => p.trim())
-      const [name, email, password, roll_no, class_name, batch_name] = parts
+      // Sanitize roll number against null bytes and control chars
+      // eslint-disable-next-line no-control-regex
+      const roll_no = rawRollNo.replace(/[\0\x00-\x1F\x7F]/g, '').trim()
 
       if (!name || !email || !password || !roll_no || !class_name) {
+        errorCount++
+        continue
+      }
+
+      // Password security check
+      const passCheck = validatePassword(password)
+      if (!passCheck.isValid) {
+        console.error(`Line ${i + 2}: ${passCheck.error}`)
         errorCount++
         continue
       }
@@ -403,7 +423,7 @@ export default function AdminUsersPage() {
         const cleanEmail = normalizeEmail(email)
         const emailCheck = validateEmail(cleanEmail)
         if (!emailCheck.isValid) {
-          throw new Error(`Line ${i}: ${emailCheck.error}`)
+          throw new Error(`Line ${i + 2}: ${emailCheck.error}`)
         }
 
         // Provision via admin-create-user Edge Function
@@ -429,17 +449,31 @@ export default function AdminUsersPage() {
 
         successCount++
       } catch (e) {
-        console.error('Import error on line', i, e)
+        console.error('Import error on line', i + 2, e)
         errorCount++
       }
     }
 
     setIsImporting(false)
-    setShowCsvImport(false)
-    setCsvText('')
-    queryClient.invalidateQueries({ queryKey: ['admin-users'] })
-    queryClient.invalidateQueries({ queryKey: ['admin-stats'] })
-    toast.success(`CSV Import complete: ${successCount} added, ${errorCount} errors.`)
+    const outcome = evaluateCsvImportOutcome(successCount, errorCount)
+
+    if (successCount > 0) {
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+      queryClient.invalidateQueries({ queryKey: ['admin-stats'] })
+    }
+
+    if (outcome.shouldCloseModal) {
+      setShowCsvImport(false)
+    }
+    if (outcome.shouldClearInput) {
+      setCsvText('')
+    }
+
+    if (outcome.status === 'success') {
+      toast.success(outcome.message)
+    } else {
+      toast.error(outcome.message)
+    }
   }
 
   // Filtered user list
