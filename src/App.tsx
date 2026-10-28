@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from 'react-hot-toast'
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
@@ -37,15 +37,8 @@ import { App as CapApp } from '@capacitor/app'
 import { StatusBar, Style } from '@capacitor/status-bar'
 import { SplashScreen } from '@capacitor/splash-screen'
 
-// Create a shared QueryClient — staleTime 30s keeps data fresh without over-fetching
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 30_000,
-      retry: 1,
-    },
-  },
-})
+// Shared QueryClient singleton — also used by useAuth for cache cleanup on sign-out
+import { queryClient } from './lib/queryClient'
 
 /**
  * Handles Android hardware back button and status bar in native runtime

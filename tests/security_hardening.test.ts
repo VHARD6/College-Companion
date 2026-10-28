@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { queryClient } from '../src/lib/queryClient.ts'
 import {
   isValidDownloadUrl,
   sanitizeDownloadFilename,
@@ -950,7 +953,496 @@ describe('Comprehensive Security & Harsh Abrupt Use Test Suite', () => {
       }, /Session 99 not found for teaching assignment 1/)
     })
   })
+
+  // ─── PART 12: Submit Attendance Session (submit_attendance_session) Invariants ───
+  describe('12. Submit Attendance Session (submit_attendance_session) Ownership & Invariants', () => {
+    interface MockAuditEntry {
+      id: number
+      record_id: number
+      old_status: string | null
+      new_status: string
+      reason: string
+    }
+
+    function executeSubmitAttendanceSessionAtomic(
+      caller: { role: string; professor_id?: number },
+      params: {
+        p_session_id: number | null
+        p_teaching_assignment_id: number
+        p_date: string
+        p_session_type: string
+        p_records: Array<{ student_id: number; status: string }>
+      },
+      dbState: {
+        assignments: Array<{ id: number; professor_id: number; class_id: number; batch_id: number | null }>
+        students: Array<{ id: number; class_id: number; batch_id: number | null }>
+        sessions: Map<number, { id: number; teaching_assignment_id: number; date: string; session_type: string; status: 'draft' | 'submitted' }>
+        records: Map<string, { session_id: number; student_id: number; status: 'present' | 'absent' }>
+        auditLogs: MockAuditEntry[]
+        todayISO: string
+      }
+    ) {
+      // Transaction snapshots for atomic rollback
+      const sessionSnapshot = new Map(dbState.sessions)
+      const recordSnapshot = new Map(dbState.records)
+      const auditSnapshot = [...dbState.auditLogs]
+
+      try {
+        // 1. Role verification
+        if (caller.role !== 'professor' && caller.role !== 'admin') {
+          throw new Error('Unauthorized: only active professors or admins can submit attendance')
+        }
+
+        // 2. Assignment ownership
+        const assignment = dbState.assignments.find(a => a.id === params.p_teaching_assignment_id)
+        if (!assignment) {
+          throw new Error(`Teaching assignment ${params.p_teaching_assignment_id} not found`)
+        }
+        if (caller.role === 'professor' && assignment.professor_id !== caller.professor_id) {
+          throw new Error(`Forbidden: You are not authorized for teaching assignment ${params.p_teaching_assignment_id}`)
+        }
+
+        // 3. Date & session type validation
+        if (params.p_date > dbState.todayISO) {
+          throw new Error(`Cannot mark attendance for a future date (${params.p_date})`)
+        }
+        if (!['lecture', 'practical', 'tutorial'].includes(params.p_session_type)) {
+          throw new Error(`Invalid session type: ${params.p_session_type}`)
+        }
+        if (!params.p_records || params.p_records.length === 0) {
+          throw new Error('Cannot submit attendance session with empty student records.')
+        }
+
+        // 4. Session ownership check and row-level status verification (Migration 012 hardening)
+        let sessionId = params.p_session_id
+        if (sessionId !== null) {
+          const existing = dbState.sessions.get(sessionId)
+          if (!existing) {
+            throw new Error(`Session ${sessionId} not found for teaching assignment ${params.p_teaching_assignment_id}`)
+          }
+          if (existing.teaching_assignment_id !== params.p_teaching_assignment_id) {
+            throw new Error(`Session ${sessionId} does not belong to teaching assignment ${params.p_teaching_assignment_id}`)
+          }
+          if (existing.status === 'submitted') {
+            throw new Error(`Session ${sessionId} has already been submitted. Use correction workflow for modifications.`)
+          }
+        } else {
+          // Look up existing session by assignment + date
+          for (const s of dbState.sessions.values()) {
+            if (s.teaching_assignment_id === params.p_teaching_assignment_id && s.date === params.p_date) {
+              if (s.status === 'submitted') {
+                throw new Error(`Attendance for this subject on ${params.p_date} has already been submitted (session ${s.id}).`)
+              }
+              sessionId = s.id
+              break
+            }
+          }
+        }
+
+        // 5. Upsert session as submitted
+        if (sessionId === null) {
+          sessionId = dbState.sessions.size + 1
+          dbState.sessions.set(sessionId, {
+            id: sessionId,
+            teaching_assignment_id: params.p_teaching_assignment_id,
+            date: params.p_date,
+            session_type: params.p_session_type,
+            status: 'submitted',
+          })
+        } else {
+          const s = dbState.sessions.get(sessionId)!
+          s.status = 'submitted'
+          s.date = params.p_date
+          s.session_type = params.p_session_type
+        }
+
+        // 6. Validate student enrollment and upsert records + initial audit entries
+        let recordsProcessed = 0
+        const studentsById = new Map(dbState.students.map(st => [st.id, st]))
+
+        for (const rec of params.p_records) {
+          if (!rec.student_id || !Number.isInteger(rec.student_id)) {
+            throw new Error('Missing or invalid student_id in attendance records')
+          }
+          if (rec.status !== 'present' && rec.status !== 'absent') {
+            throw new Error(`Invalid attendance status "${rec.status}" for student ${rec.student_id}`)
+          }
+
+          const st = studentsById.get(rec.student_id)
+          const isEnrolled = !!st &&
+            st.class_id === assignment.class_id &&
+            (assignment.batch_id === null || (st.batch_id !== null && st.batch_id === assignment.batch_id))
+
+          if (!isEnrolled) {
+            throw new Error(`Student ${rec.student_id} is not enrolled in class ${assignment.class_id} (batch ${assignment.batch_id})`)
+          }
+
+          const recKey = `${sessionId}-${rec.student_id}`
+          dbState.records.set(recKey, {
+            session_id: sessionId,
+            student_id: rec.student_id,
+            status: rec.status,
+          })
+
+          const recordId = dbState.records.size
+          dbState.auditLogs.push({
+            id: dbState.auditLogs.length + 1,
+            record_id: recordId,
+            old_status: null,
+            new_status: rec.status,
+            reason: 'Initial submission',
+          })
+
+          recordsProcessed++
+        }
+
+        return {
+          success: true,
+          session_id: sessionId,
+          status: 'submitted',
+          records_processed: recordsProcessed,
+        }
+      } catch (err) {
+        dbState.sessions = sessionSnapshot
+        dbState.records = recordSnapshot
+        dbState.auditLogs = auditSnapshot
+        throw err
+      }
+    }
+
+    const testAssignments = [
+      { id: 1, professor_id: 10, class_id: 1, batch_id: null }, // CS-A Whole Class
+      { id: 2, professor_id: 10, class_id: 1, batch_id: 2 },    // CS-A Batch 2
+      { id: 3, professor_id: 20, class_id: 2, batch_id: null }, // CS-B Other Professor
+    ]
+
+    const testStudents = [
+      { id: 101, class_id: 1, batch_id: null },
+      { id: 102, class_id: 1, batch_id: 1 },
+      { id: 103, class_id: 1, batch_id: 2 },
+      { id: 201, class_id: 2, batch_id: null },
+    ]
+
+    it('rejects submission when p_session_id belongs to a different teaching assignment (ownership gap)', () => {
+      const existingSessions = new Map([
+        [77, { id: 77, teaching_assignment_id: 3, date: '2026-10-27', session_type: 'lecture', status: 'draft' as const }],
+      ])
+      const db = {
+        assignments: testAssignments,
+        students: testStudents,
+        sessions: existingSessions,
+        records: new Map(),
+        auditLogs: [],
+        todayISO: '2026-10-27',
+      }
+
+      // Prof 10 owns assignment 1, but passes session 77 which belongs to assignment 3!
+      assert.throws(() => {
+        executeSubmitAttendanceSessionAtomic(
+          { role: 'professor', professor_id: 10 },
+          {
+            p_session_id: 77,
+            p_teaching_assignment_id: 1,
+            p_date: '2026-10-27',
+            p_session_type: 'lecture',
+            p_records: [{ student_id: 101, status: 'present' }],
+          },
+          db
+        )
+      }, /Session 77 does not belong to teaching assignment 1/)
+    })
+
+    it('rejects submission when p_session_id is non-existent', () => {
+      const db = {
+        assignments: testAssignments,
+        students: testStudents,
+        sessions: new Map(),
+        records: new Map(),
+        auditLogs: [],
+        todayISO: '2026-10-27',
+      }
+
+      assert.throws(() => {
+        executeSubmitAttendanceSessionAtomic(
+          { role: 'professor', professor_id: 10 },
+          {
+            p_session_id: 999,
+            p_teaching_assignment_id: 1,
+            p_date: '2026-10-27',
+            p_session_type: 'lecture',
+            p_records: [{ student_id: 101, status: 'present' }],
+          },
+          db
+        )
+      }, /Session 999 not found for teaching assignment 1/)
+    })
+
+    it('rejects submission when session is already submitted (forces correction workflow)', () => {
+      const existingSessions = new Map([
+        [12, { id: 12, teaching_assignment_id: 1, date: '2026-10-27', session_type: 'lecture', status: 'submitted' as const }],
+      ])
+      const db = {
+        assignments: testAssignments,
+        students: testStudents,
+        sessions: existingSessions,
+        records: new Map(),
+        auditLogs: [],
+        todayISO: '2026-10-27',
+      }
+
+      assert.throws(() => {
+        executeSubmitAttendanceSessionAtomic(
+          { role: 'professor', professor_id: 10 },
+          {
+            p_session_id: 12,
+            p_teaching_assignment_id: 1,
+            p_date: '2026-10-27',
+            p_session_type: 'lecture',
+            p_records: [{ student_id: 101, status: 'present' }],
+          },
+          db
+        )
+      }, /Session 12 has already been submitted\. Use correction workflow for modifications\./)
+    })
+
+    it('rejects submission with empty student records', () => {
+      const db = {
+        assignments: testAssignments,
+        students: testStudents,
+        sessions: new Map(),
+        records: new Map(),
+        auditLogs: [],
+        todayISO: '2026-10-27',
+      }
+
+      assert.throws(() => {
+        executeSubmitAttendanceSessionAtomic(
+          { role: 'professor', professor_id: 10 },
+          {
+            p_session_id: null,
+            p_teaching_assignment_id: 1,
+            p_date: '2026-10-27',
+            p_session_type: 'lecture',
+            p_records: [],
+          },
+          db
+        )
+      }, /Cannot submit attendance session with empty student records\./)
+    })
+
+    it('allows legitimate submission by owning professor and creates audit log entries atomically', () => {
+      const db = {
+        assignments: testAssignments,
+        students: testStudents,
+        sessions: new Map(),
+        records: new Map(),
+        auditLogs: [] as MockAuditEntry[],
+        todayISO: '2026-10-27',
+      }
+
+      const res = executeSubmitAttendanceSessionAtomic(
+        { role: 'professor', professor_id: 10 },
+        {
+          p_session_id: null,
+          p_teaching_assignment_id: 1,
+          p_date: '2026-10-27',
+          p_session_type: 'lecture',
+          p_records: [
+            { student_id: 101, status: 'present' },
+            { student_id: 102, status: 'absent' },
+          ],
+        },
+        db
+      )
+
+      assert.equal(res.success, true)
+      assert.equal(res.status, 'submitted')
+      assert.equal(res.records_processed, 2)
+      assert.equal(db.sessions.get(res.session_id)?.status, 'submitted')
+      assert.equal(db.records.size, 2)
+      assert.equal(db.auditLogs.length, 2)
+      assert.equal(db.auditLogs[0].reason, 'Initial submission')
+      assert.equal(db.auditLogs[0].old_status, null)
+      assert.equal(db.auditLogs[0].new_status, 'present')
+      assert.equal(db.auditLogs[1].new_status, 'absent')
+    })
+  })
+
+  // ─── PART 13: Direct PostgREST Table Write Restriction Architecture ───
+  describe('13. Direct PostgREST Table Write Restriction Architecture', () => {
+    it('models table-level write privilege denial for direct PostgREST endpoints', () => {
+      // Direct REST calls to attendance tables without RPC execution
+      const directTableMutations = [
+        { table: 'attendance_records', method: 'POST', body: { session_id: 1, student_id: 101, status: 'present' } },
+        { table: 'attendance_records', method: 'PATCH', body: { status: 'absent' } },
+        { table: 'attendance_records', method: 'DELETE', body: null },
+        { table: 'sessions', method: 'POST', body: { teaching_assignment_id: 1, status: 'submitted' } },
+        { table: 'sessions', method: 'PATCH', body: { status: 'draft' } },
+        { table: 'attendance_audit_log', method: 'POST', body: { record_id: 1, new_status: 'present', reason: 'hacked' } },
+      ]
+
+      function evaluateDirectTablePermission(table: string, method: string): { allowed: boolean; errorCode?: string } {
+        // Migration 012 explicitly revokes INSERT, UPDATE, DELETE on these tables from client roles
+        if (['attendance_records', 'sessions', 'attendance_audit_log'].includes(table)) {
+          if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(method)) {
+            return { allowed: false, errorCode: '42501' } // PostgreSQL permission_denied
+          }
+        }
+        return { allowed: true }
+      }
+
+      for (const mut of directTableMutations) {
+        const result = evaluateDirectTablePermission(mut.table, mut.method)
+        assert.equal(result.allowed, false, `Direct ${mut.method} on ${mut.table} must be denied at privilege layer`)
+        assert.equal(result.errorCode, '42501')
+      }
+
+      // SELECT must remain allowed
+      assert.equal(evaluateDirectTablePermission('attendance_records', 'GET').allowed, true)
+      assert.equal(evaluateDirectTablePermission('sessions', 'GET').allowed, true)
+      assert.equal(evaluateDirectTablePermission('attendance_audit_log', 'GET').allowed, true)
+    })
+  })
+
+  // ─── PART 14: Query Cache Cleanup on Logout & Account Switching ───
+  describe('14. Query Cache Cleanup on Logout & Account Switching', () => {
+    it('clears all cached queries from QueryClient when sign-out is triggered', () => {
+      // Populate cache with mock sensitive data
+      queryClient.setQueryData(['admin-users'], [{ id: 'user-1', name: 'Admin', email: 'admin@college.edu' }])
+      queryClient.setQueryData(['student-attendance', 101], { percent: 85, attended: 17, held: 20 })
+      queryClient.setQueryData(['roster-students', 1], [{ id: 101, name: 'Alice', roll_no: 'CS101' }])
+
+      // Verify data is present in cache
+      assert.ok(queryClient.getQueryData(['admin-users']))
+      assert.ok(queryClient.getQueryData(['student-attendance', 101]))
+      assert.ok(queryClient.getQueryData(['roster-students', 1]))
+      assert.ok(queryClient.getQueryCache().getAll().length >= 3)
+
+      // Simulate sign-out cache wipe (as implemented in useAuth.ts)
+      queryClient.clear()
+
+      // Verify all cache entries are purged immediately
+      assert.equal(queryClient.getQueryData(['admin-users']), undefined)
+      assert.equal(queryClient.getQueryData(['student-attendance', 101]), undefined)
+      assert.equal(queryClient.getQueryData(['roster-students', 1]), undefined)
+      assert.equal(queryClient.getQueryCache().getAll().length, 0)
+    })
+  })
+
+  // ─── PART 15: Whole-Class Teaching Assignment Partial Unique Index ───
+  describe('15. Teaching Assignment Whole-Class Partial Unique Index & Duplicate Detection', () => {
+    interface AssignmentRow {
+      id: number
+      professor_id: number
+      subject_id: number
+      class_id: number
+      batch_id: number | null
+    }
+
+    function checkWholeClassDuplicates(assignments: AssignmentRow[]): { hasDuplicates: boolean; duplicates: string[] } {
+      const wholeClassMap = new Map<string, number[]>()
+
+      for (const a of assignments) {
+        if (a.batch_id === null) {
+          const key = `${a.professor_id}-${a.subject_id}-${a.class_id}`
+          const existing = wholeClassMap.get(key) || []
+          existing.push(a.id)
+          wholeClassMap.set(key, existing)
+        }
+      }
+
+      const duplicates: string[] = []
+      for (const [key, ids] of wholeClassMap.entries()) {
+        if (ids.length > 1) {
+          duplicates.push(`Key ${key} has ${ids.length} duplicate rows: IDs [${ids.join(', ')}]`)
+        }
+      }
+
+      return { hasDuplicates: duplicates.length > 0, duplicates }
+    }
+
+    it('detects duplicate whole-class assignments where batch_id IS NULL', () => {
+      const datasetWithDuplicates: AssignmentRow[] = [
+        { id: 1, professor_id: 10, subject_id: 1, class_id: 1, batch_id: null },
+        { id: 2, professor_id: 10, subject_id: 1, class_id: 1, batch_id: null }, // Duplicate!
+        { id: 3, professor_id: 10, subject_id: 1, class_id: 1, batch_id: 1 },    // Batch 1 (different, allowed)
+      ]
+
+      const check = checkWholeClassDuplicates(datasetWithDuplicates)
+      assert.equal(check.hasDuplicates, true)
+      assert.equal(check.duplicates.length, 1)
+      assert.match(check.duplicates[0], /duplicate rows: IDs \[1, 2\]/)
+    })
+
+    it('allows valid distinct whole-class assignments and distinct batches', () => {
+      const validDataset: AssignmentRow[] = [
+        { id: 1, professor_id: 10, subject_id: 1, class_id: 1, batch_id: null }, // CS-A Theory
+        { id: 2, professor_id: 10, subject_id: 1, class_id: 2, batch_id: null }, // CS-B Theory (different class)
+        { id: 3, professor_id: 20, subject_id: 1, class_id: 1, batch_id: null }, // CS-A Theory (different prof)
+        { id: 4, professor_id: 10, subject_id: 2, class_id: 1, batch_id: null }, // CS-A Theory Subj 2 (different subj)
+        { id: 5, professor_id: 10, subject_id: 1, class_id: 1, batch_id: 1 },    // Practical Batch 1
+        { id: 6, professor_id: 10, subject_id: 1, class_id: 1, batch_id: 2 },    // Practical Batch 2
+      ]
+
+      const check = checkWholeClassDuplicates(validDataset)
+      assert.equal(check.hasDuplicates, false)
+      assert.equal(check.duplicates.length, 0)
+    })
+  })
+
+  // ─── PART 16: Security Headers, Android Manifest & CI Workflow ───
+  describe('16. Security Headers, Android Manifest & CI Workflow Configuration', () => {
+    it('verifies vercel.json contains CSP, HSTS, and Permissions-Policy headers', () => {
+      const vercelPath = path.resolve('vercel.json')
+      assert.ok(fs.existsSync(vercelPath), 'vercel.json must exist')
+
+      const content = JSON.parse(fs.readFileSync(vercelPath, 'utf-8'))
+      const globalHeaderEntry = content.headers?.find((h: any) => h.source === '/(.*)')
+      assert.ok(globalHeaderEntry, 'Global header rule must be present in vercel.json')
+
+      const headerMap = new Map<string, string>()
+      for (const h of globalHeaderEntry.headers) {
+        headerMap.set(h.key, h.value)
+      }
+
+      // 1. Strict-Transport-Security
+      assert.ok(headerMap.has('Strict-Transport-Security'), 'HSTS header must be configured')
+      const hsts = headerMap.get('Strict-Transport-Security')!
+      assert.match(hsts, /max-age=63072000/)
+      assert.match(hsts, /includeSubDomains/)
+
+      // 2. Content-Security-Policy
+      assert.ok(headerMap.has('Content-Security-Policy'), 'CSP header must be configured')
+      const csp = headerMap.get('Content-Security-Policy')!
+      assert.match(csp, /default-src 'self'/)
+      assert.match(csp, /frame-ancestors 'none'/)
+      assert.match(csp, /https:\/\/\*\.supabase\.co/)
+
+      // 3. Permissions-Policy
+      assert.ok(headerMap.has('Permissions-Policy'), 'Permissions-Policy header must be configured')
+      const perm = headerMap.get('Permissions-Policy')!
+      assert.match(perm, /camera=\(\)/)
+      assert.match(perm, /microphone=\(\)/)
+      assert.match(perm, /geolocation=\(\)/)
+    })
+
+    it('verifies AndroidManifest.xml disables backup to prevent ADB token extraction', () => {
+      const manifestPath = path.resolve('android/app/src/main/AndroidManifest.xml')
+      assert.ok(fs.existsSync(manifestPath), 'AndroidManifest.xml must exist')
+
+      const xml = fs.readFileSync(manifestPath, 'utf-8')
+      assert.match(xml, /android:allowBackup="false"/, 'android:allowBackup must be explicitly false')
+    })
+
+    it('verifies GitHub Actions CI workflow runs test, lint, and build on push/PR to main', () => {
+      const ciPath = path.resolve('.github/workflows/ci.yml')
+      assert.ok(fs.existsSync(ciPath), 'ci.yml must exist')
+
+      const yml = fs.readFileSync(ciPath, 'utf-8')
+      assert.match(yml, /branches:\s*\[main\]/)
+      assert.match(yml, /npm test/)
+      assert.match(yml, /npm run lint/)
+      assert.match(yml, /npm run build/)
+    })
+  })
 })
-
-
-

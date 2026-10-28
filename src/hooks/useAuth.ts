@@ -12,6 +12,8 @@ import {
 } from '../lib/authUtils'
 import type { Profile } from '../types'
 import type { User } from '@supabase/supabase-js'
+// Shared singleton — imported from lib to avoid a circular dep with App.tsx
+import { queryClient } from '../lib/queryClient'
 
 export interface SignUpOptions {
   name: string
@@ -88,8 +90,13 @@ export function useAuth() {
         setUser(session.user)
         loadProfile(session.user.id)
       } else {
+        // Session ended (sign-out, token expiry, or account switch).
+        // Clear the entire query cache so no previous user's data is accessible
+        // to the next session on a shared browser/device.
+        queryClient.clear()
         setUser(null)
         setProfile(null)
+        setProfileError(null)
         setLoading(false)
       }
     })
@@ -287,6 +294,11 @@ export function useAuth() {
     try {
       await supabase.auth.signOut()
     } finally {
+      // Clear ALL cached query data immediately so no previous user's data
+      // remains accessible to the next session on the same browser/device.
+      // The onAuthStateChange handler also clears the cache; this call here
+      // ensures cleanup happens synchronously in the same microtask.
+      queryClient.clear()
       setUser(null)
       setProfile(null)
       setProfileError(null)
