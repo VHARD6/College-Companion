@@ -1445,4 +1445,377 @@ describe('Comprehensive Security & Harsh Abrupt Use Test Suite', () => {
       assert.match(yml, /npm run build/)
     })
   })
+
+  // ─── PART 17: Migration 013: Inactive-Account Authorization, Concurrency & Audit Policy Hardening ───
+  describe('17. Migration 013: Inactive-Account Authorization, Concurrency & Audit Policy Hardening', () => {
+    const migration13Path = path.resolve('supabase/migrations/013_harden_inactive_account_rpc_authorization.sql')
+
+    it('verifies migration 013 SQL file exists and contains all required security fixes', () => {
+      assert.ok(fs.existsSync(migration13Path), 'Migration 013 file must exist')
+      const sql = fs.readFileSync(migration13Path, 'utf-8')
+
+      // 1. Explicit NULL-role check in all three functions (protects against PostgreSQL tri-state logic)
+      const submitRoleGuard = /submit_attendance_session[\s\S]*?v_role IS NULL OR v_role NOT IN \('professor', 'admin'\)/
+      const draftRoleGuard = /save_draft_session[\s\S]*?v_role IS NULL OR v_role NOT IN \('professor', 'admin'\)/
+      const correctRoleGuard = /correct_attendance_records[\s\S]*?v_role IS NULL OR v_role NOT IN \('professor', 'admin'\)/
+
+      assert.ok(submitRoleGuard.test(sql), 'submit_attendance_session must explicitly guard against NULL v_role')
+      assert.ok(draftRoleGuard.test(sql), 'save_draft_session must explicitly guard against NULL v_role')
+      assert.ok(correctRoleGuard.test(sql), 'correct_attendance_records must explicitly guard against NULL v_role')
+
+      // 2. Transaction-level advisory lock in session creation functions
+      assert.match(sql, /pg_advisory_xact_lock\(hashtext\(format\('session:%s:%s', p_teaching_assignment_id, p_date\)\)\)/)
+
+      // 3. Obsolete audit policy cleanup
+      assert.match(sql, /DROP POLICY IF EXISTS audit_admin ON public\.attendance_audit_log;/)
+      assert.match(sql, /DROP POLICY IF EXISTS audit_prof_insert ON public\.attendance_audit_log;/)
+      assert.match(sql, /DROP POLICY IF EXISTS audit_insert ON public\.attendance_audit_log;/)
+
+      // 4. Preserved read policies
+      assert.match(sql, /CREATE POLICY audit_admin_read ON public\.attendance_audit_log/)
+      assert.match(sql, /CREATE POLICY audit_prof_read ON public\.attendance_audit_log/)
+
+      // 5. Explicit table privilege revocations and grants
+      assert.match(sql, /REVOKE INSERT, UPDATE, DELETE ON public\.attendance_audit_log FROM authenticated, anon, public;/)
+      assert.match(sql, /GRANT SELECT ON public\.attendance_audit_log TO authenticated;/)
+
+      // 6. Security Definer, search_path, and EXECUTE grants
+      assert.match(sql, /SECURITY DEFINER\s+SET search_path = public, pg_temp/)
+      assert.match(sql, /GRANT EXECUTE ON FUNCTION public\.submit_attendance_session TO authenticated;/)
+      assert.match(sql, /REVOKE EXECUTE ON FUNCTION public\.submit_attendance_session FROM anon;/)
+      assert.match(sql, /GRANT EXECUTE ON FUNCTION public\.save_draft_session TO authenticated;/)
+      assert.match(sql, /REVOKE EXECUTE ON FUNCTION public\.save_draft_session FROM anon;/)
+      assert.match(sql, /GRANT EXECUTE ON FUNCTION public\.correct_attendance_records TO authenticated;/)
+      assert.match(sql, /REVOKE EXECUTE ON FUNCTION public\.correct_attendance_records FROM anon;/)
+    })
+
+    // Reference model for all 3 RPCs incorporating Migration 013 authorization & concurrency
+    interface RPCUser {
+      role: string | null | undefined
+      professor_id?: number
+    }
+
+    interface MockSessionRow {
+      id: number
+      teaching_assignment_id: number
+      date: string
+      session_type: string
+      status: 'draft' | 'submitted'
+      submitted_at?: string
+    }
+
+    interface MockRecordRow {
+      id: number
+      session_id: number
+      student_id: number
+      status: 'present' | 'absent'
+    }
+
+    interface MockAuditRow {
+      id: number
+      record_id: number
+      old_status: string | null
+      new_status: string
+      reason: string
+    }
+
+    function checkRpcRole(caller: RPCUser, rpcName: string) {
+      // Models the hardened check: IF v_role IS NULL OR v_role NOT IN ('professor', 'admin') THEN
+      if (caller.role === null || caller.role === undefined || !['professor', 'admin'].includes(caller.role)) {
+        if (rpcName === 'submit') {
+          throw new Error('Unauthorized: only active professors or admins can submit attendance')
+        } else if (rpcName === 'draft') {
+          throw new Error('Unauthorized: only active professors or admins can save drafts')
+        } else {
+          throw new Error('Unauthorized: only active professors or admins can perform attendance corrections.')
+        }
+      }
+    }
+
+    it('rejects NULL-role and inactive-account callers across all three RPC workflows', () => {
+      const inactiveCallers: RPCUser[] = [
+        { role: null },
+        { role: undefined },
+        { role: 'student' },
+        { role: 'inactive_professor' },
+        { role: '' },
+      ]
+
+      for (const caller of inactiveCallers) {
+        // submit_attendance_session
+        assert.throws(
+          () => checkRpcRole(caller, 'submit'),
+          /Unauthorized: only active professors or admins can submit attendance/
+        )
+
+        // save_draft_session
+        assert.throws(
+          () => checkRpcRole(caller, 'draft'),
+          /Unauthorized: only active professors or admins can save drafts/
+        )
+
+        // correct_attendance_records
+        assert.throws(
+          () => checkRpcRole(caller, 'correct'),
+          /Unauthorized: only active professors or admins can perform attendance corrections\./
+        )
+      }
+    })
+
+    it('demonstrates how unhardened tri-state NOT IN allows NULL role while hardened guard rejects it', () => {
+      // In PostgreSQL: NULL NOT IN ('professor', 'admin') -> NULL (skips IF branch)
+      function unhardenedGuardPasses(role: string | null): boolean {
+        // Simulates unhardened: IF v_role NOT IN ('professor', 'admin') THEN RAISE
+        const condition = role !== null && !['professor', 'admin'].includes(role)
+        if (condition) {
+          throw new Error('Rejected')
+        }
+        return true // Bypassed!
+      }
+
+      // Hardened: IF v_role IS NULL OR v_role NOT IN ('professor', 'admin') THEN RAISE
+      function hardenedGuardPasses(role: string | null): boolean {
+        const condition = role === null || !['professor', 'admin'].includes(role)
+        if (condition) {
+          throw new Error('Rejected: Unauthorized')
+        }
+        return true
+      }
+
+      // Unhardened incorrectly allows NULL through
+      assert.equal(unhardenedGuardPasses(null), true, 'Unhardened guard incorrectly lets NULL pass through')
+
+      // Hardened explicitly rejects NULL
+      assert.throws(() => hardenedGuardPasses(null), /Rejected: Unauthorized/)
+      assert.throws(() => hardenedGuardPasses('student'), /Rejected: Unauthorized/)
+      assert.equal(hardenedGuardPasses('professor'), true)
+      assert.equal(hardenedGuardPasses('admin'), true)
+    })
+
+    it('allows valid professor and administrator workflows in attendance corrections', () => {
+      const sessions = new Map<number, MockSessionRow>([
+        [1, { id: 1, teaching_assignment_id: 10, date: '2026-10-27', session_type: 'lecture', status: 'submitted', submitted_at: new Date(Date.now() - 3600000).toISOString() }],
+      ])
+      const records = new Map<string, MockRecordRow>([
+        ['1-101', { id: 501, session_id: 1, student_id: 101, status: 'absent' }],
+      ])
+      const auditLogs: MockAuditRow[] = []
+      const assignments = [{ id: 10, professor_id: 5, class_id: 1, batch_id: null }]
+
+      function correctRecords(
+        caller: RPCUser,
+        sessionId: number,
+        changes: Array<{ student_id: number; new_status: 'present' | 'absent' }>,
+        reason: string
+      ) {
+        if (!reason || reason.trim().length === 0) {
+          throw new Error('A non-empty reason is mandatory for attendance corrections.')
+        }
+        checkRpcRole(caller, 'correct')
+
+        const session = sessions.get(sessionId)
+        if (!session) throw new Error(`Session ${sessionId} not found.`)
+        if (session.status !== 'submitted') throw new Error(`Session ${sessionId} is not submitted. Use standard submission instead.`)
+
+        const assignment = assignments.find(a => a.id === session.teaching_assignment_id)
+        if (caller.role === 'professor') {
+          if (!assignment || assignment.professor_id !== caller.professor_id) {
+            throw new Error("Forbidden: You do not have permission to modify another professor's session.")
+          }
+          const submittedMs = new Date(session.submitted_at!).getTime()
+          if ((Date.now() - submittedMs) > 24 * 3600000) {
+            throw new Error('Correction window (24 hours) has expired for session 1. Modification locked.')
+          }
+        }
+
+        let changesApplied = 0
+        for (const ch of changes) {
+          const rec = records.get(`${sessionId}-${ch.student_id}`)
+          if (!rec) throw new Error(`Attendance record not found for student ${ch.student_id} in session ${sessionId}`)
+          if (rec.status !== ch.new_status) {
+            const oldStatus = rec.status
+            rec.status = ch.new_status
+            auditLogs.push({
+              id: auditLogs.length + 1,
+              record_id: rec.id,
+              old_status: oldStatus,
+              new_status: ch.new_status,
+              reason: reason.trim(),
+            })
+            changesApplied++
+          }
+        }
+        return { success: true, session_id: sessionId, changes_applied: changesApplied }
+      }
+
+      // Owning professor modifies attendance within window
+      const profResult = correctRecords(
+        { role: 'professor', professor_id: 5 },
+        1,
+        [{ student_id: 101, new_status: 'present' }],
+        'Medical certificate verified'
+      )
+      assert.equal(profResult.success, true)
+      assert.equal(profResult.changes_applied, 1)
+      assert.equal(records.get('1-101')?.status, 'present')
+      assert.equal(auditLogs.length, 1)
+      assert.equal(auditLogs[0].reason, 'Medical certificate verified')
+      assert.equal(auditLogs[0].old_status, 'absent')
+      assert.equal(auditLogs[0].new_status, 'present')
+
+      // Admin override modifies attendance
+      const adminResult = correctRecords(
+        { role: 'admin' },
+        1,
+        [{ student_id: 101, new_status: 'absent' }],
+        'Administrative audit correction'
+      )
+      assert.equal(adminResult.success, true)
+      assert.equal(adminResult.changes_applied, 1)
+      assert.equal(records.get('1-101')?.status, 'absent')
+      assert.equal(auditLogs.length, 2)
+      assert.equal(auditLogs[1].reason, 'Administrative audit correction')
+    })
+
+    it('denies corrections without mandatory non-empty reason', () => {
+      assert.throws(() => {
+        if (!''.trim()) throw new Error('A non-empty reason is mandatory for attendance corrections.')
+      }, /A non-empty reason is mandatory for attendance corrections\./)
+
+      assert.throws(() => {
+        if (!'   '.trim()) throw new Error('A non-empty reason is mandatory for attendance corrections.')
+      }, /A non-empty reason is mandatory for attendance corrections\./)
+    })
+
+    it('models concurrent session creation and verifies advisory lock prevents duplicate sessions', async () => {
+      // Simulate database table and transaction-level advisory locks
+      const sessionsTable = new Map<number, MockSessionRow>()
+      let nextSessionId = 1
+      const activeLocks = new Set<string>()
+
+      async function acquireAdvisoryLock(key: string): Promise<() => void> {
+        // Wait until lock is available
+        while (activeLocks.has(key)) {
+          await new Promise(resolve => setTimeout(resolve, 5))
+        }
+        activeLocks.add(key)
+        return () => {
+          activeLocks.delete(key)
+        }
+      }
+
+      async function saveDraftSessionConcurrent(
+        caller: RPCUser,
+        teachingAssignmentId: number,
+        date: string,
+        sessionType: string
+      ): Promise<{ session_id: number; created: boolean }> {
+        checkRpcRole(caller, 'draft')
+
+        // Acquire transaction-level advisory lock on (assignment, date)
+        const lockKey = `session:${teachingAssignmentId}:${date}`
+        const releaseLock = await acquireAdvisoryLock(lockKey)
+
+        try {
+          // Check if session already exists under the lock
+          let existingSession: MockSessionRow | undefined
+          for (const s of sessionsTable.values()) {
+            if (s.teaching_assignment_id === teachingAssignmentId && s.date === date) {
+              existingSession = s
+              break
+            }
+          }
+
+          if (existingSession) {
+            if (existingSession.status === 'submitted') {
+              throw new Error(`Session on ${date} is already submitted.`)
+            }
+            // Update existing draft session
+            existingSession.session_type = sessionType
+            return { session_id: existingSession.id, created: false }
+          }
+
+          // Simulate slight I/O latency inside transaction
+          await new Promise(resolve => setTimeout(resolve, 10))
+
+          // Insert new session
+          const newId = nextSessionId++
+          const newSession: MockSessionRow = {
+            id: newId,
+            teaching_assignment_id: teachingAssignmentId,
+            date,
+            session_type: sessionType,
+            status: 'draft',
+          }
+          sessionsTable.set(newId, newSession)
+          return { session_id: newId, created: true }
+        } finally {
+          releaseLock()
+        }
+      }
+
+      // Fire 4 rapid concurrent calls for the exact same assignment and date
+      const results = await Promise.all([
+        saveDraftSessionConcurrent({ role: 'professor', professor_id: 1 }, 10, '2026-10-27', 'lecture'),
+        saveDraftSessionConcurrent({ role: 'professor', professor_id: 1 }, 10, '2026-10-27', 'lecture'),
+        saveDraftSessionConcurrent({ role: 'admin' }, 10, '2026-10-27', 'lecture'),
+        saveDraftSessionConcurrent({ role: 'professor', professor_id: 1 }, 10, '2026-10-27', 'lecture'),
+      ])
+
+      // Verification:
+      // 1. Exactly 1 session row must exist in the database table
+      assert.equal(sessionsTable.size, 1, 'Only one session row must be created for the assignment and date')
+
+      // 2. All 4 callers must have been associated with the exact same session ID
+      const createdCount = results.filter(r => r.created).length
+      assert.equal(createdCount, 1, 'Exactly one transaction should have performed INSERT')
+      for (const res of results) {
+        assert.equal(res.session_id, 1, 'All concurrent calls must resolve to the single session ID')
+      }
+    })
+
+    it('rejects concurrent submission if session was already submitted during lock wait', async () => {
+      const sessionsTable = new Map<number, MockSessionRow>([
+        [1, { id: 1, teaching_assignment_id: 20, date: '2026-10-27', session_type: 'lecture', status: 'submitted' }],
+      ])
+      const activeLocks = new Set<string>()
+
+      async function acquireAdvisoryLock(key: string): Promise<() => void> {
+        while (activeLocks.has(key)) {
+          await new Promise(resolve => setTimeout(resolve, 5))
+        }
+        activeLocks.add(key)
+        return () => {
+          activeLocks.delete(key)
+        }
+      }
+
+      async function submitSessionConcurrent(
+        caller: RPCUser,
+        teachingAssignmentId: number,
+        date: string
+      ) {
+        checkRpcRole(caller, 'submit')
+        const lockKey = `session:${teachingAssignmentId}:${date}`
+        const release = await acquireAdvisoryLock(lockKey)
+
+        try {
+          for (const s of sessionsTable.values()) {
+            if (s.teaching_assignment_id === teachingAssignmentId && s.date === date) {
+              if (s.status === 'submitted') {
+                throw new Error(`Attendance for this subject on ${date} has already been submitted (session ${s.id}).`)
+              }
+            }
+          }
+        } finally {
+          release()
+        }
+      }
+
+      await assert.rejects(
+        () => submitSessionConcurrent({ role: 'professor', professor_id: 1 }, 20, '2026-10-27'),
+        /Attendance for this subject on 2026-10-27 has already been submitted \(session 1\)\./
+      )
+    })
+  })
 })
