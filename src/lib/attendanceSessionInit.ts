@@ -247,16 +247,19 @@ export function evaluateAttendanceSaveAction(input: SaveGuardInput): SaveGuardRe
     }
 
     if (sessionId !== null && sessionId !== undefined) {
+      // If records query encountered an error and no records were loaded,
+      // saving draft MUST NOT proceed under any circumstances.
+      if (isRecordsError && existingRecords === undefined) {
+        return {
+          allowed: false,
+          code: 'UNRESOLVED_RECORDS',
+          reason: 'Cannot save draft because existing session records could not be loaded.',
+        }
+      }
+
       // If in-memory roster identity is not verified for this active session:
       if (!isRosterMatchingSession) {
         if (existingRecords === undefined) {
-          if (isRecordsError) {
-            return {
-              allowed: false,
-              code: 'UNRESOLVED_RECORDS',
-              reason: 'Cannot save draft because existing session records could not be loaded.',
-            }
-          }
           if (isRecordsLoading) {
             return {
               allowed: false,
@@ -292,16 +295,19 @@ export function evaluateAttendanceSaveAction(input: SaveGuardInput): SaveGuardRe
     }
 
     if (sessionId !== null && sessionId !== undefined) {
+      // If records query encountered an error and no records were loaded,
+      // submission MUST NOT proceed under any circumstances.
+      if (isRecordsError && existingRecords === undefined) {
+        return {
+          allowed: false,
+          code: 'UNRESOLVED_RECORDS',
+          reason: 'Cannot submit attendance because session records could not be loaded.',
+        }
+      }
+
       // If in-memory roster identity is not verified for this active session:
       if (!isRosterMatchingSession) {
         if (existingRecords === undefined) {
-          if (isRecordsError) {
-            return {
-              allowed: false,
-              code: 'UNRESOLVED_RECORDS',
-              reason: 'Cannot submit attendance because session records could not be loaded.',
-            }
-          }
           if (isRecordsLoading) {
             return {
               allowed: false,
@@ -376,4 +382,37 @@ export function evaluateAttendanceSaveAction(input: SaveGuardInput): SaveGuardRe
   }
 
   return { allowed: false, reason: 'Unknown operation' }
+}
+
+/**
+ * Detects whether the current attendance roster differs from its saved/baseline state.
+ *
+ * @param currentRoster The active in-memory attendance marks (studentId -> status)
+ * @param baselineRoster The baseline attendance marks (from saved records or initial defaults)
+ * @returns true if any student's status differs or if students exist in one but not the other
+ */
+export function hasUnsavedAttendanceChanges(
+  currentRoster: Record<number, AttendanceStatus> | null | undefined,
+  baselineRoster: Record<number, AttendanceStatus> | null | undefined
+): boolean {
+  if (!currentRoster || !baselineRoster) return false
+
+  const currentKeys = Object.keys(currentRoster)
+  const baselineKeys = Object.keys(baselineRoster)
+
+  // If both are empty (e.g. before roster is loaded), no unsaved changes
+  if (currentKeys.length === 0 && baselineKeys.length === 0) return false
+
+  // If number of tracked students differs, there are unsaved changes
+  if (currentKeys.length !== baselineKeys.length) return true
+
+  // Check each student's attendance status
+  for (const key of currentKeys) {
+    const studentId = Number(key)
+    if (currentRoster[studentId] !== baselineRoster[studentId]) {
+      return true
+    }
+  }
+
+  return false
 }

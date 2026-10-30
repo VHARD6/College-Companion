@@ -4,9 +4,15 @@ import {
   resolveRosterInitializationState,
   evaluateAttendanceSaveAction,
   AttendanceGuardError,
+  hasUnsavedAttendanceChanges,
   type ResolveRosterStateInput,
   type SaveGuardInput,
 } from '../src/lib/attendanceSessionInit.ts'
+import {
+  registerHardwareBackHandler,
+  dispatchHardwareBack,
+  clearHardwareBackHandlers,
+} from '../src/lib/backButtonHandler.ts'
 import {
   classifyAttendanceError,
   sanitizeDiagnosticValue,
@@ -1370,6 +1376,317 @@ describe('Attendance Session Initialization & Query Safety Test Suite (Pass 1a)'
           `Normal prose "${phrase}" must not be altered`
         )
       }
+    })
+  })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 14. Attendance Records Query Failure & Safe Initialization (S1 Invariant)
+  // ──────────────────────────────────────────────────────────────────────────
+  describe('14. Attendance Records Query Failure & Safe Initialization (S1 Invariant)', () => {
+    it('S1.1: never initialises roster to all-present when records query has failed on existing draft', () => {
+      const input: ResolveRosterStateInput = {
+        sessionId: 55,
+        students: mockStudents,
+        existingRecords: undefined, // Failed query!
+        isRecordsLoading: false,
+        isRecordsError: true,
+        recordsError: new Error('PostgREST 500: internal database connection error'),
+        sessionStatus: 'draft',
+      }
+
+      const res = resolveRosterInitializationState(input)
+      assert.equal(res.state, 'QUERY_FAILED')
+      if (res.state === 'QUERY_FAILED') {
+        assert.equal(res.canRetry, true)
+        assert.match(res.errorMessage, /database connection error/i)
+      }
+    })
+
+    it('S1.2: distinguishes empty record set ([]) from failed query (undefined)', () => {
+      // Empty records set: query succeeded, exactly 0 records exist
+      const emptyInput: ResolveRosterStateInput = {
+        sessionId: 55,
+        students: mockStudents,
+        existingRecords: [], // Query succeeded with 0 records
+        isRecordsLoading: false,
+        isRecordsError: false,
+        sessionStatus: 'draft',
+      }
+
+      const emptyRes = resolveRosterInitializationState(emptyInput)
+      assert.equal(emptyRes.state, 'READY')
+      if (emptyRes.state === 'READY') {
+        assert.equal(emptyRes.source, 'existing_restored')
+        // Valid draft without stored records defaults enrolled students to present
+        assert.equal(emptyRes.roster[101], 'present')
+        assert.equal(emptyRes.roster[102], 'present')
+      }
+
+      // Query failed: undefined records with error
+      const failedInput: ResolveRosterStateInput = {
+        sessionId: 55,
+        students: mockStudents,
+        existingRecords: undefined, // NOT empty array
+        isRecordsLoading: false,
+        isRecordsError: true,
+        recordsError: new Error('Timeout'),
+      }
+
+      const failedRes = resolveRosterInitializationState(failedInput)
+      assert.equal(failedRes.state, 'QUERY_FAILED')
+      assert.notEqual(failedRes.state, 'READY')
+    })
+
+    it('S1.3: preserves saved attendance statuses when records load successfully', () => {
+      const input: ResolveRosterStateInput = {
+        sessionId: 55,
+        students: mockStudents,
+        existingRecords: [
+          { student_id: 101, status: 'present' },
+          { student_id: 102, status: 'absent' },
+          { student_id: 103, status: 'present' },
+        ],
+        isRecordsLoading: false,
+        isRecordsError: false,
+        sessionStatus: 'draft',
+      }
+
+      const res = resolveRosterInitializationState(input)
+      assert.equal(res.state, 'READY')
+      if (res.state === 'READY') {
+        assert.equal(res.source, 'existing_restored')
+        assert.equal(res.roster[101], 'present')
+        assert.equal(res.roster[102], 'absent') // Preserved!
+        assert.equal(res.roster[103], 'present')
+      }
+    })
+
+    it('S1.4: evaluateAttendanceSaveAction strictly blocks save_draft when records query failed', () => {
+      // Even if isRosterMatchingSession is claimed true, failure to load existing records blocks saving draft
+      const input: SaveGuardInput = {
+        operation: 'save_draft',
+        sessionId: 55,
+        isSubmitted: false,
+        isLocked: false,
+        studentsCount: 3,
+        hasInMemoryRoster: true,
+        isRosterMatchingSession: true,
+        existingRecords: undefined, // Failed to load!
+        isRecordsLoading: false,
+        isRecordsError: true,
+      }
+
+      const res = evaluateAttendanceSaveAction(input)
+      assert.equal(res.allowed, false)
+      assert.equal(res.code, 'UNRESOLVED_RECORDS')
+      assert.match(res.reason ?? '', /could not be loaded/i)
+    })
+
+    it('S1.5: evaluateAttendanceSaveAction strictly blocks submit when records query failed', () => {
+      const input: SaveGuardInput = {
+        operation: 'submit',
+        sessionId: 55,
+        isSubmitted: false,
+        isLocked: false,
+        studentsCount: 3,
+        hasInMemoryRoster: true,
+        isRosterMatchingSession: true,
+        existingRecords: undefined, // Failed to load!
+        isRecordsLoading: false,
+        isRecordsError: true,
+      }
+
+      const res = evaluateAttendanceSaveAction(input)
+      assert.equal(res.allowed, false)
+      assert.equal(res.code, 'UNRESOLVED_RECORDS')
+      assert.match(res.reason ?? '', /could not be loaded/i)
+    })
+  })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 15. Unsaved Changes Guard Pure Detection (S2 Invariant)
+  // ──────────────────────────────────────────────────────────────────────────
+  describe('15. Unsaved Changes Guard Pure Detection (S2 Invariant)', () => {
+    it('S2.1: returns false when current roster matches saved baseline exactly', () => {
+      const baseline: Record<number, AttendanceStatus> = {
+        101: 'present',
+        102: 'absent',
+        103: 'present',
+      }
+      const current: Record<number, AttendanceStatus> = {
+        101: 'present',
+        102: 'absent',
+        103: 'present',
+      }
+
+      assert.equal(hasUnsavedAttendanceChanges(current, baseline), false)
+    })
+
+    it('S2.2: returns true when any student attendance status is modified', () => {
+      const baseline: Record<number, AttendanceStatus> = {
+        101: 'present',
+        102: 'absent',
+        103: 'present',
+      }
+      // Student 102 toggled to present
+      const current: Record<number, AttendanceStatus> = {
+        101: 'present',
+        102: 'present',
+        103: 'present',
+      }
+
+      assert.equal(hasUnsavedAttendanceChanges(current, baseline), true)
+    })
+
+    it('S2.3: returns false when modified student status is reverted back to baseline', () => {
+      const baseline: Record<number, AttendanceStatus> = {
+        101: 'present',
+        102: 'absent',
+        103: 'present',
+      }
+      // Student toggled away then toggled back
+      const current: Record<number, AttendanceStatus> = {
+        101: 'present',
+        102: 'absent',
+        103: 'present',
+      }
+
+      assert.equal(hasUnsavedAttendanceChanges(current, baseline), false)
+    })
+
+    it('S2.4: returns false when both rosters are empty or either is null/undefined', () => {
+      assert.equal(hasUnsavedAttendanceChanges(null, null), false)
+      assert.equal(hasUnsavedAttendanceChanges({}, null), false)
+      assert.equal(hasUnsavedAttendanceChanges(null, {}), false)
+      assert.equal(hasUnsavedAttendanceChanges({}, {}), false)
+      assert.equal(hasUnsavedAttendanceChanges({ 101: 'present' }, null), false)
+    })
+
+    it('S2.5: returns true when student roster size differs from baseline', () => {
+      const baseline: Record<number, AttendanceStatus> = {
+        101: 'present',
+      }
+      const current: Record<number, AttendanceStatus> = {
+        101: 'present',
+        102: 'present',
+      }
+
+      assert.equal(hasUnsavedAttendanceChanges(current, baseline), true)
+    })
+  })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 16. Hardware Back Button Dispatcher & Layered Dismissal (S2 Invariant)
+  // ──────────────────────────────────────────────────────────────────────────
+  describe('16. Hardware Back Button Dispatcher & Layered Dismissal (S2 Invariant)', () => {
+    beforeEach(() => {
+      clearHardwareBackHandlers()
+    })
+
+    afterEach(() => {
+      clearHardwareBackHandlers()
+    })
+
+    it('S2.6: returns false when no back handlers are registered', () => {
+      assert.equal(dispatchHardwareBack(), false)
+    })
+
+    it('S2.7: executes registered handlers in LIFO stack order and consumes event on return true', () => {
+      const executionOrder: string[] = []
+
+      const unregisterFirst = registerHardwareBackHandler(() => {
+        executionOrder.push('first')
+        return false // did not consume
+      })
+
+      const unregisterSecond = registerHardwareBackHandler(() => {
+        executionOrder.push('second')
+        return true // consumed!
+      })
+
+      const handled = dispatchHardwareBack()
+      assert.equal(handled, true)
+      // Second handler was registered last, so it executes first
+      assert.deepEqual(executionOrder, ['second'])
+
+      unregisterFirst()
+      unregisterSecond()
+    })
+
+    it('S2.8: models layered dismissal: unsaved dialog open -> first back closes dialog without navigating', () => {
+      let showUnsavedModal = true
+      let navigatedAway = false
+
+      const unregister = registerHardwareBackHandler(() => {
+        if (showUnsavedModal) {
+          showUnsavedModal = false // first back dismisses dialog!
+          return true // event consumed
+        }
+        return false // allows navigation
+      })
+
+      // 1. User presses hardware back while unsaved dialog is open
+      const firstBackResult = dispatchHardwareBack()
+      assert.equal(firstBackResult, true, 'Hardware back must consume event when dialog is open')
+      assert.equal(showUnsavedModal, false, 'First back must close the unsaved dialog')
+      assert.equal(navigatedAway, false, 'First back must NOT navigate away')
+
+      // 2. User presses hardware back again now that dialog is closed and no unsaved changes
+      const secondBackResult = dispatchHardwareBack()
+      assert.equal(secondBackResult, false, 'Second back must allow default navigation')
+
+      unregister()
+    })
+
+    it('S2.9: models multi-step wizard step-back: Step 3 -> Step 2 -> Step 1 -> Guard -> Default Exit', () => {
+      let currentStep: 1 | 2 | 3 = 3
+      let showUnsavedModal = false
+      let hasUnsaved = true
+
+      const unregister = registerHardwareBackHandler(() => {
+        if (showUnsavedModal) {
+          showUnsavedModal = false
+          return true
+        }
+        if (currentStep === 3) {
+          currentStep = 2
+          return true
+        }
+        if (currentStep === 2) {
+          currentStep = 1
+          return true
+        }
+        if (hasUnsaved) {
+          showUnsavedModal = true
+          return true
+        }
+        return false
+      })
+
+      // Back 1: Step 3 -> Step 2
+      assert.equal(dispatchHardwareBack(), true)
+      assert.equal(currentStep, 2)
+
+      // Back 2: Step 2 -> Step 1
+      assert.equal(dispatchHardwareBack(), true)
+      assert.equal(currentStep, 1)
+
+      // Back 3: On Step 1 with unsaved changes -> opens unsaved dialog
+      assert.equal(dispatchHardwareBack(), true)
+      assert.equal(showUnsavedModal, true)
+
+      // Back 4: With dialog open -> closes dialog (stays on Step 1)
+      assert.equal(dispatchHardwareBack(), true)
+      assert.equal(showUnsavedModal, false)
+      assert.equal(currentStep, 1)
+
+      // If user discards changes:
+      hasUnsaved = false
+
+      // Back 5: With 0 unsaved changes -> returns false (allows default navigation / app exit)
+      assert.equal(dispatchHardwareBack(), false)
+
+      unregister()
     })
   })
 })

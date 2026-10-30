@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
@@ -20,7 +20,9 @@ import {
   resolveRosterInitializationState,
   evaluateAttendanceSaveAction,
   AttendanceGuardError,
+  hasUnsavedAttendanceChanges,
 } from '../../lib/attendanceSessionInit'
+import { registerHardwareBackHandler } from '../../lib/backButtonHandler'
 import { classifyAttendanceError, logDiagnostic } from '../../lib/errors'
 import toast from 'react-hot-toast'
 import {
@@ -48,9 +50,9 @@ export default function MarkAttendancePage() {
   const rawSessionId = searchParams.get('sessionId')
 
   const [assignmentId, setAssignmentId] = useState<number | null>(rawAssignmentId ? Number(rawAssignmentId) : null)
-  const [sessionId, setSessionId] = useState<number | null>(rawSessionId ? Number(rawSessionId) : null)
+  const [createdSessionId, setCreatedSessionId] = useState<number | null>(null)
   const [sessionDate, setSessionDate] = useState<string>(todayISO())
-  const [sessionType, setSessionType] = useState<SessionType>('lecture')
+  const [userSessionType, setUserSessionType] = useState<SessionType | null>(null)
   const [isSelectingAssignment, setIsSelectingAssignment] = useState<boolean>(!rawAssignmentId && !rawSessionId)
 
   // 3-Step Wizard Navigation: 1 = Mark Attendance, 2 = Review Absentees, 3 = Final Review
@@ -64,20 +66,105 @@ export default function MarkAttendancePage() {
   const [initializedKey, setInitializedKey] = useState<string | null>(null)
 
   const rosterStatusRef = useRef<Record<number, AttendanceStatus>>(rosterStatus)
-  const rosterSessionIdRef = useRef<number | null | undefined>(sessionId)
+  const rosterSessionIdRef = useRef<number | null | undefined>(undefined)
+
+  // Saved baseline to detect unsaved changes reliably
+  const baselineRosterRef = useRef<Record<number, AttendanceStatus> | null>(null)
+  const isDiscardingRef = useRef(false)
 
   useEffect(() => {
     rosterStatusRef.current = rosterStatus
   }, [rosterStatus])
 
-  // Submission confirmation modal state
+  // Dialog states
   const [showConfirmModal, setShowConfirmModal] = useState(false)
+  const [showUnsavedModal, setShowUnsavedModal] = useState(false)
+  const pendingNavigationRef = useRef<(() => void) | null>(null)
 
   // Edit reason (required when modifying an already submitted session)
   const [editReason, setEditReason] = useState('')
 
   // Authentication error state during save / submit actions
   const [saveAuthError, setSaveAuthError] = useState<string | null>(null)
+
+  // Helper: check if attendance differs from saved baseline
+  const hasUnsavedChanges = useCallback(() => {
+    if (isDiscardingRef.current) return false
+    return hasUnsavedAttendanceChanges(rosterStatus, baselineRosterRef.current)
+  }, [rosterStatus])
+
+  // Fresh state ref to prevent stale closures in hardware back handler
+  const stateRef = useRef({
+    showConfirmModal,
+    showUnsavedModal,
+    currentStep,
+    isSelectingAssignment,
+    hasUnsavedChanges: false,
+  })
+  useEffect(() => {
+    stateRef.current = {
+      showConfirmModal,
+      showUnsavedModal,
+      currentStep,
+      isSelectingAssignment,
+      hasUnsavedChanges: hasUnsavedChanges(),
+    }
+  })
+
+  // Hardware back button integration (Android / Capacitor)
+  useEffect(() => {
+    const unregister = registerHardwareBackHandler(() => {
+      const state = stateRef.current
+      // 1. If unsaved changes modal is open, first back action dismisses it (stays on page)
+      if (state.showUnsavedModal) {
+        setShowUnsavedModal(false)
+        pendingNavigationRef.current = null
+        return true
+      }
+      // 2. If submission confirmation modal is open, first back action closes it
+      if (state.showConfirmModal) {
+        setShowConfirmModal(false)
+        return true
+      }
+      // 3. Step 3 -> Step 2
+      if (state.currentStep === 3) {
+        setCurrentStep(2)
+        return true
+      }
+      // 4. Step 2 -> Step 1
+      if (state.currentStep === 2) {
+        setCurrentStep(1)
+        return true
+      }
+      // 5. If in assignment selection view but already had an active assignment, return to it
+      if (state.isSelectingAssignment && assignmentId) {
+        setIsSelectingAssignment(false)
+        return true
+      }
+      // 6. On Step 1 with unsaved changes, prompt before leaving
+      if (state.hasUnsavedChanges) {
+        pendingNavigationRef.current = null
+        setShowUnsavedModal(true)
+        return true
+      }
+      // 7. No unsaved changes: allow default navigation (navigate(-1) or app exit)
+      return false
+    })
+
+    return unregister
+  }, [assignmentId])
+
+  // Browser navigation / tab closing guard
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges()) {
+        e.preventDefault()
+        e.returnValue = ''
+      }
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [hasUnsavedChanges])
 
   // 1. Fetch professor record
   const {
@@ -138,6 +225,40 @@ export default function MarkAttendancePage() {
     },
   })
 
+  // 3b. Auto-detect existing session for (assignmentId, sessionDate) when not opened with a specific sessionId
+  const {
+    data: dateSessionData,
+    isLoading: isCheckingDateSession,
+    isError: isDateSessionError,
+    error: dateSessionError,
+    refetch: refetchDateSession,
+  } = useQuery({
+    queryKey: ['date-session', assignmentId, sessionDate],
+    enabled: !!assignmentId && !rawSessionId && !isSelectingAssignment,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('sessions')
+        .select('id, date, session_type, status')
+        .eq('teaching_assignment_id', assignmentId!)
+        .eq('date', sessionDate)
+        .maybeSingle()
+      if (error) throw error
+      return data
+    },
+  })
+
+  const effectiveSessionId = rawSessionId
+    ? Number(rawSessionId)
+    : (createdSessionId ?? dateSessionData?.id ?? null)
+  const isDetectingSession = !rawSessionId && !createdSessionId && isCheckingDateSession
+
+  // Derived session_type from user selection, existing session, detected date session, or default
+  const sessionType: SessionType =
+    userSessionType ??
+    (existingSession?.session_type as SessionType) ??
+    (dateSessionData?.session_type as SessionType) ??
+    'lecture'
+
   // 4. Fetch existing session if sessionId was provided or discovered
   const {
     data: existingSession,
@@ -146,18 +267,17 @@ export default function MarkAttendancePage() {
     error: sessionError,
     refetch: refetchSession,
   } = useQuery({
-    queryKey: ['session', sessionId],
-    enabled: !!sessionId,
+    queryKey: ['session', effectiveSessionId],
+    enabled: !!effectiveSessionId,
     queryFn: async () => {
       const { data, error } = await supabase
         .from('sessions')
         .select('*, teaching_assignments(id, class_id, batch_id, subjects(id, name, type, code), classes(id, name), batches(id, name))')
-        .eq('id', sessionId!)
+        .eq('id', effectiveSessionId!)
         .single()
       if (error) throw error
       if (data) {
         setSessionDate(data.date)
-        setSessionType(data.session_type as SessionType)
         setAssignmentId(data.teaching_assignment_id)
         setIsSelectingAssignment(false)
       }
@@ -188,37 +308,6 @@ export default function MarkAttendancePage() {
   const currentAssignment = existingSession?.teaching_assignments || assignmentData
   const classId = (currentAssignment as any)?.class_id
   const batchId = (currentAssignment as any)?.batch_id
-
-  // Auto-detect existing session for (assignmentId, sessionDate) when not opened with a specific sessionId
-  useEffect(() => {
-    if (!assignmentId || rawSessionId) return
-
-    let isMounted = true
-    async function checkDateSession() {
-      const { data, error } = await supabase
-        .from('sessions')
-        .select('id, date, session_type, status')
-        .eq('teaching_assignment_id', assignmentId!)
-        .eq('date', sessionDate)
-        .maybeSingle()
-
-      if (!isMounted) return
-      if (error) {
-        logDiagnostic(error)
-        return
-      }
-
-      if (data?.id) {
-        setSessionId(data.id)
-        setSessionType(data.session_type as SessionType)
-      } else {
-        setSessionId(null)
-      }
-    }
-
-    checkDateSession()
-    return () => { isMounted = false }
-  }, [assignmentId, sessionDate, rawSessionId])
 
   // 6. Fetch enrolled students for this class & batch
   const {
@@ -261,13 +350,13 @@ export default function MarkAttendancePage() {
     error: recordsError,
     refetch: refetchRecords,
   } = useQuery({
-    queryKey: ['attendance-records', sessionId],
-    enabled: !!sessionId && !isSelectingAssignment,
+    queryKey: ['attendance-records', effectiveSessionId],
+    enabled: !!effectiveSessionId && !isSelectingAssignment,
     queryFn: async () => {
       const { data, error } = await supabase
         .from('attendance_records')
         .select('*')
-        .eq('session_id', sessionId!)
+        .eq('session_id', effectiveSessionId!)
       if (error) throw error
       return data ?? []
     },
@@ -278,14 +367,15 @@ export default function MarkAttendancePage() {
   // - For a new session: all students start as 'present'
   // - For an existing session: restore saved statuses
   useEffect(() => {
+    if (isDetectingSession) return
     if (!students || students.length === 0) return
 
     const resolution = resolveRosterInitializationState({
-      sessionId,
+      sessionId: effectiveSessionId,
       students,
       existingRecords,
-      isRecordsLoading: !!sessionId && recordsLoading,
-      isRecordsError: !!sessionId && isRecordsError,
+      isRecordsLoading: !!effectiveSessionId && recordsLoading,
+      isRecordsError: !!effectiveSessionId && isRecordsError,
       recordsError,
       currentRoster: Object.keys(rosterStatusRef.current).length > 0 ? rosterStatusRef.current : null,
       currentRosterSessionId: rosterSessionIdRef.current,
@@ -295,23 +385,25 @@ export default function MarkAttendancePage() {
     if (resolution.state === 'READY') {
       if (resolution.source !== 'in_memory_preserved') {
         const recordsKey = existingRecords ? existingRecords.length : 'unloaded'
-        const loadKey = `${assignmentId}-${sessionId ?? 'new'}-${recordsKey}-${resolution.source}`
+        const loadKey = `${assignmentId}-${effectiveSessionId ?? 'new'}-${recordsKey}-${resolution.source}`
 
         if (initializedKey !== loadKey) {
           setRosterStatus(resolution.roster)
           rosterStatusRef.current = resolution.roster
-          rosterSessionIdRef.current = sessionId
+          rosterSessionIdRef.current = effectiveSessionId
+          baselineRosterRef.current = { ...resolution.roster }
           setInitializedKey(loadKey)
         }
       } else {
-        rosterSessionIdRef.current = sessionId
+        rosterSessionIdRef.current = effectiveSessionId
       }
     }
   }, [
+    isDetectingSession,
     students,
     existingRecords,
     assignmentId,
-    sessionId,
+    effectiveSessionId,
     initializedKey,
     recordsLoading,
     isRecordsError,
@@ -362,10 +454,12 @@ export default function MarkAttendancePage() {
   // Switch assignment handler
   const handleSelectAssignment = (newAssignmentId: number) => {
     setAssignmentId(newAssignmentId)
-    setSessionId(null)
+    setCreatedSessionId(null)
     setRosterStatus({})
     rosterStatusRef.current = {}
     rosterSessionIdRef.current = undefined
+    baselineRosterRef.current = null
+    setUserSessionType(null)
     setInitializedKey(null)
     setCurrentStep(1)
     setSearch('')
@@ -377,12 +471,13 @@ export default function MarkAttendancePage() {
 
   // Handle auth expired navigation with explicit confirmation
   const handleAuthExpiredSignIn = () => {
-    const confirmationText = sessionId
+    const confirmationText = effectiveSessionId
       ? 'Your unsaved changes will be lost if you leave. Any previously saved drafts will remain intact. Leave to sign in now?'
       : 'Your unsaved attendance marks will be lost if you leave. Leave to sign in now?'
 
     const confirmed = window.confirm(confirmationText)
     if (confirmed) {
+      isDiscardingRef.current = true
       navigate('/login')
     }
   }
@@ -390,19 +485,41 @@ export default function MarkAttendancePage() {
   // Handle wizard step back navigation
   const handleBack = () => {
     setSaveAuthError(null)
+    if (showUnsavedModal) {
+      setShowUnsavedModal(false)
+      pendingNavigationRef.current = null
+      return
+    }
+    if (showConfirmModal) {
+      setShowConfirmModal(false)
+      return
+    }
     if (currentStep === 3) {
       setCurrentStep(2)
-    } else if (currentStep === 2) {
+      return
+    }
+    if (currentStep === 2) {
       setCurrentStep(1)
-    } else if (!rawAssignmentId) {
-      setIsSelectingAssignment(true)
-    } else {
-      if (window.history.length > 1 && window.history.state?.idx !== 0) {
+      return
+    }
+    // On Step 1: guard unsaved changes before leaving
+    const executeLeave = () => {
+      isDiscardingRef.current = true
+      if (!rawAssignmentId) {
+        setIsSelectingAssignment(true)
+      } else if (window.history.length > 1 && window.history.state?.idx !== 0) {
         navigate(-1)
       } else {
         navigate('/professor')
       }
     }
+
+    if (hasUnsavedChanges()) {
+      pendingNavigationRef.current = executeLeave
+      setShowUnsavedModal(true)
+      return
+    }
+    executeLeave()
   }
 
   // Atomic Save / Submit Mutation via Database RPC functions
@@ -414,19 +531,19 @@ export default function MarkAttendancePage() {
 
       const guard = evaluateAttendanceSaveAction({
         operation,
-        sessionId,
+        sessionId: effectiveSessionId,
         isSubmitted,
         isLocked,
         studentsCount: students?.length ?? 0,
         hasInMemoryRoster: Object.keys(rosterStatus).length > 0,
         isRosterMatchingSession:
           rosterSessionIdRef.current !== undefined &&
-          (sessionId !== null && sessionId !== undefined
-            ? rosterSessionIdRef.current === sessionId
+          (effectiveSessionId !== null && effectiveSessionId !== undefined
+            ? rosterSessionIdRef.current === effectiveSessionId
             : rosterSessionIdRef.current === null),
         existingRecords,
-        isRecordsLoading: !!sessionId && recordsLoading,
-        isRecordsError: !!sessionId && isRecordsError,
+        isRecordsLoading: !!effectiveSessionId && recordsLoading,
+        isRecordsError: !!effectiveSessionId && isRecordsError,
         editReason,
       })
 
@@ -442,7 +559,7 @@ export default function MarkAttendancePage() {
         }))
 
         const { data: rpcData, error: rpcErr } = await supabase.rpc('save_draft_session', {
-          p_session_id: sessionId,
+          p_session_id: effectiveSessionId,
           p_teaching_assignment_id: assignmentId,
           p_date: sessionDate,
           p_session_type: sessionType,
@@ -461,7 +578,7 @@ export default function MarkAttendancePage() {
         }))
 
         const { data: rpcData, error: rpcErr } = await supabase.rpc('submit_attendance_session', {
-          p_session_id: sessionId,
+          p_session_id: effectiveSessionId,
           p_teaching_assignment_id: assignmentId,
           p_date: sessionDate,
           p_session_type: sessionType,
@@ -496,18 +613,19 @@ export default function MarkAttendancePage() {
       }
 
       const { data: rpcData, error: rpcErr } = await supabase.rpc('correct_attendance_records', {
-        p_session_id: sessionId!,
+        p_session_id: effectiveSessionId!,
         p_changes: changes,
         p_reason: editReason.trim(),
       })
 
       if (rpcErr) throw rpcErr
-      return { submitFinal: true, sessionId, changesApplied: rpcData?.changes_applied }
+      return { submitFinal: true, sessionId: effectiveSessionId, changesApplied: rpcData?.changes_applied }
     },
     onSuccess: (data) => {
       setSaveAuthError(null)
-      queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
-      queryClient.invalidateQueries({ queryKey: ['attendance-records', sessionId] })
+      queryClient.invalidateQueries({ queryKey: ['session', effectiveSessionId] })
+      queryClient.invalidateQueries({ queryKey: ['attendance-records', effectiveSessionId] })
+      queryClient.invalidateQueries({ queryKey: ['date-session', assignmentId, sessionDate] })
       queryClient.invalidateQueries({ queryKey: ['professor-today'] })
       queryClient.invalidateQueries({ queryKey: ['professor-today-slots'] })
       queryClient.invalidateQueries({ queryKey: ['professor-drafts'] })
@@ -516,18 +634,21 @@ export default function MarkAttendancePage() {
       queryClient.invalidateQueries({ queryKey: ['admin-submitted-sessions'] })
 
       if (data.submitFinal) {
+        isDiscardingRef.current = true
         toast.success(isSubmitted ? 'Attendance modifications saved!' : 'Attendance successfully submitted!')
         navigate('/professor')
       } else {
         toast.success('Draft saved.')
+        baselineRosterRef.current = { ...rosterStatus }
         if (data.sessionId) {
           rosterSessionIdRef.current = data.sessionId
         }
-        if (data.sessionId && data.sessionId !== sessionId) {
-          setSessionId(data.sessionId)
+        if (data.sessionId && data.sessionId !== effectiveSessionId) {
+          setCreatedSessionId(data.sessionId)
           setSearchParams({ sessionId: String(data.sessionId) })
           queryClient.invalidateQueries({ queryKey: ['session', data.sessionId] })
           queryClient.invalidateQueries({ queryKey: ['attendance-records', data.sessionId] })
+          queryClient.invalidateQueries({ queryKey: ['date-session', assignmentId, sessionDate] })
         }
       }
     },
@@ -574,10 +695,11 @@ export default function MarkAttendancePage() {
   const subject = (currentAssignment as any)?.subjects
   const cls = (currentAssignment as any)?.classes
   const batch = (currentAssignment as any)?.batches
-  const isRecordsFatalError = !!sessionId && isRecordsError && existingRecords === undefined
-  const isLoading = sessionLoading || studentsLoading || (!!sessionId && recordsLoading && existingRecords === undefined)
-  const hasError = isSessionError || isAssignmentError || isStudentsError || isRecordsFatalError
-  const rawError = (isRecordsFatalError ? recordsError : null) || sessionError || assignmentError || studentsError
+  const isRecordsFatalError = !!effectiveSessionId && isRecordsError && existingRecords === undefined
+  const isRecordsLoading = !!effectiveSessionId && recordsLoading && existingRecords === undefined
+  const isLoading = sessionLoading || studentsLoading || isRecordsLoading || isDetectingSession
+  const hasError = isSessionError || isAssignmentError || isStudentsError || isDateSessionError || isRecordsFatalError
+  const rawError = (isRecordsFatalError ? recordsError : null) || (isDateSessionError ? dateSessionError : null) || sessionError || assignmentError || studentsError
   const classifiedError = classifyAttendanceError(rawError)
 
   // Log diagnostic error information once when a query failure occurs (never on ordinary renders, never when no error)
@@ -779,7 +901,7 @@ export default function MarkAttendancePage() {
           <button
             type="button"
             onClick={() => setCurrentStep(2)}
-            disabled={hasError || !students || students.length === 0}
+            disabled={hasError || isLoading || !students || students.length === 0}
             className={`flex items-center gap-1.5 text-xs transition-colors disabled:opacity-50 ${
               currentStep === 2
                 ? 'text-blue-600 font-bold'
@@ -797,8 +919,8 @@ export default function MarkAttendancePage() {
             >
               {currentStep > 2 ? '✓' : '2'}
             </span>
-            <span className="hidden sm:inline">Absentees ({hasError ? '--' : absentCount})</span>
-            <span className="sm:hidden">Absentees ({hasError ? '--' : absentCount})</span>
+            <span className="hidden sm:inline">Absentees ({hasError || isLoading ? '--' : absentCount})</span>
+            <span className="sm:hidden">Absentees ({hasError || isLoading ? '--' : absentCount})</span>
           </button>
 
           <span className="text-gray-300 text-xs font-bold">→</span>
@@ -807,7 +929,7 @@ export default function MarkAttendancePage() {
           <button
             type="button"
             onClick={() => setCurrentStep(3)}
-            disabled={hasError || !students || students.length === 0}
+            disabled={hasError || isLoading || !students || students.length === 0}
             className={`flex items-center gap-1.5 text-xs transition-colors disabled:opacity-50 ${
               currentStep === 3
                 ? 'text-blue-600 font-bold'
@@ -833,15 +955,15 @@ export default function MarkAttendancePage() {
           <div className="max-w-lg mx-auto flex items-center justify-between gap-2">
             <div className="flex-1 bg-white border border-gray-200 rounded-xl py-1 px-2 text-center shadow-2xs">
               <span className="text-[11px] text-gray-500 font-medium">Total: </span>
-              <span className="text-xs font-bold text-gray-800">{hasError ? '--' : totalCount}</span>
+              <span className="text-xs font-bold text-gray-800">{hasError || isLoading ? '--' : totalCount}</span>
             </div>
             <div className="flex-1 bg-green-50 border border-green-200 rounded-xl py-1 px-2 text-center shadow-2xs">
               <span className="text-[11px] text-green-700 font-medium">Present: </span>
-              <span className="text-xs font-bold text-green-800">{hasError ? '--' : presentCount}</span>
+              <span className="text-xs font-bold text-green-800">{hasError || isLoading ? '--' : presentCount}</span>
             </div>
             <div className="flex-1 bg-red-50 border border-red-200 rounded-xl py-1 px-2 text-center shadow-2xs">
               <span className="text-[11px] text-red-700 font-medium">Absent: </span>
-              <span className="text-xs font-bold text-red-800">{hasError ? '--' : absentCount}</span>
+              <span className="text-xs font-bold text-red-800">{hasError || isLoading ? '--' : absentCount}</span>
             </div>
           </div>
         </div>
@@ -873,7 +995,10 @@ export default function MarkAttendancePage() {
                     refetchSession()
                     refetchAssignment()
                     refetchStudents()
-                    if (sessionId) {
+                    if (!rawSessionId) {
+                      refetchDateSession()
+                    }
+                    if (effectiveSessionId) {
                       refetchRecords()
                     }
                   }}
@@ -897,7 +1022,7 @@ export default function MarkAttendancePage() {
         )}
 
         {/* Background Records Refetch Error Notice (Non-blocking) */}
-        {!hasError && !!sessionId && isRecordsError && existingRecords !== undefined && (
+        {!hasError && !!effectiveSessionId && isRecordsError && existingRecords !== undefined && (
           <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 flex items-center justify-between gap-3 text-xs text-amber-800">
             <div className="flex items-center gap-2">
               <AlertCircle size={16} className="text-amber-600 shrink-0" />
@@ -965,7 +1090,14 @@ export default function MarkAttendancePage() {
                 {!isSubmitted && (
                   <button
                     type="button"
-                    onClick={() => setIsSelectingAssignment(true)}
+                    onClick={() => {
+                      if (hasUnsavedChanges()) {
+                        pendingNavigationRef.current = () => setIsSelectingAssignment(true)
+                        setShowUnsavedModal(true)
+                      } else {
+                        setIsSelectingAssignment(true)
+                      }
+                    }}
                     className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-full font-medium shrink-0 transition-colors"
                   >
                     <ArrowLeftRight size={11} />
@@ -981,14 +1113,33 @@ export default function MarkAttendancePage() {
                     type="date"
                     max={todayISO()}
                     value={sessionDate}
-                    onChange={e => setSessionDate(e.target.value)}
+                    onChange={e => {
+                      const newDate = e.target.value
+                      if (newDate === sessionDate) return
+                      const applyDateChange = () => {
+                        setSessionDate(newDate)
+                        setCreatedSessionId(null)
+                        setRosterStatus({})
+                        rosterStatusRef.current = {}
+                        rosterSessionIdRef.current = undefined
+                        baselineRosterRef.current = null
+                        setUserSessionType(null)
+                        setInitializedKey(null)
+                      }
+                      if (hasUnsavedChanges()) {
+                        pendingNavigationRef.current = applyDateChange
+                        setShowUnsavedModal(true)
+                      } else {
+                        applyDateChange()
+                      }
+                    }}
                   />
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Session Type</label>
                     <select
                       className="block w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm shadow-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                       value={sessionType}
-                      onChange={e => setSessionType(e.target.value as SessionType)}
+                      onChange={e => setUserSessionType(e.target.value as SessionType)}
                     >
                       <option value="lecture">Lecture</option>
                       <option value="practical">Practical</option>
@@ -1286,7 +1437,7 @@ export default function MarkAttendancePage() {
       {/* ─────────────────────────────────────────────────────────────────────
           FIXED BOTTOM ACTION BAR PER STEP
           ───────────────────────────────────────────────────────────────────── */}
-      {!isLocked && !hasError && (students?.length ?? 0) > 0 && (
+      {!isLocked && !hasError && !isLoading && (students?.length ?? 0) > 0 && (
         <div className="fixed bottom-[56px] left-0 right-0 bg-white border-t border-gray-200 p-3 z-30 shadow-lg">
           <div className="max-w-lg mx-auto space-y-2">
             {saveAuthError && (
@@ -1434,6 +1585,67 @@ export default function MarkAttendancePage() {
                 }}
               >
                 Confirm &amp; Submit
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────────────
+          UNSAVED CHANGES CONFIRMATION MODAL
+          ───────────────────────────────────────────────────────────────────── */}
+      {showUnsavedModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center text-amber-600 shrink-0">
+                <AlertTriangle size={20} />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-gray-900">
+                  Unsaved Changes
+                </h3>
+                <p className="text-xs text-gray-500">
+                  Attendance marks have not been saved
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-600 leading-relaxed">
+              If you leave now, your unsaved changes will be discarded. Are you sure you want to discard your changes and leave?
+            </p>
+
+            <div className="flex gap-2 pt-1">
+              <Button
+                variant="danger"
+                className="flex-1"
+                onClick={() => {
+                  isDiscardingRef.current = true
+                  setShowUnsavedModal(false)
+                  if (pendingNavigationRef.current) {
+                    const nav = pendingNavigationRef.current
+                    pendingNavigationRef.current = null
+                    nav()
+                  } else {
+                    if (window.history.length > 1 && window.history.state?.idx !== 0) {
+                      navigate(-1)
+                    } else {
+                      navigate('/professor')
+                    }
+                  }
+                }}
+              >
+                Discard Changes
+              </Button>
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => {
+                  setShowUnsavedModal(false)
+                  pendingNavigationRef.current = null
+                }}
+              >
+                Keep Editing
               </Button>
             </div>
           </div>

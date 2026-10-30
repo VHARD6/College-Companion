@@ -39,6 +39,7 @@ import { SplashScreen } from '@capacitor/splash-screen'
 
 // Shared QueryClient singleton — also used by useAuth for cache cleanup on sign-out
 import { queryClient } from './lib/queryClient'
+import { dispatchHardwareBack } from './lib/backButtonHandler'
 
 /**
  * Handles Android hardware back button and status bar in native runtime
@@ -59,6 +60,11 @@ function NativeMobileHandler() {
 
     // Android hardware back button listener
     const backListener = CapApp.addListener('backButton', () => {
+      // Allow custom handlers (dialog dismissal, wizard steps, unsaved changes guards) to intercept
+      if (dispatchHardwareBack()) {
+        return
+      }
+
       const currentPath = window.location.pathname
       // Exit app if on root dashboard or login page
       if (
