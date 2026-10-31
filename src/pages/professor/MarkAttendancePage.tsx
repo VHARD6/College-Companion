@@ -24,6 +24,7 @@ import {
 } from '../../lib/attendanceSessionInit'
 import { registerHardwareBackHandler } from '../../lib/backButtonHandler'
 import { classifyAttendanceError, logDiagnostic } from '../../lib/errors'
+import { Capacitor } from '@capacitor/core'
 import toast from 'react-hot-toast'
 import {
   Search,
@@ -166,6 +167,121 @@ export default function MarkAttendancePage() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
   }, [hasUnsavedChanges])
 
+  // Browser SPA history back navigation guard (web browser desktop and mobile)
+  const hasGuardHistoryRef = useRef(false)
+
+  // Push guard history entry when in an interceptable state
+  useEffect(() => {
+    if (Capacitor.isNativePlatform()) return
+    if (typeof window === 'undefined' || !window.history) return
+
+    const shouldIntercept =
+      hasUnsavedChanges() ||
+      showConfirmModal ||
+      showUnsavedModal ||
+      currentStep > 1 ||
+      (isSelectingAssignment && assignmentId !== null)
+
+    if (shouldIntercept && !hasGuardHistoryRef.current) {
+      window.history.pushState({ unsavedGuard: true }, '', window.location.href)
+      hasGuardHistoryRef.current = true
+    }
+  }, [
+    hasUnsavedChanges,
+    showConfirmModal,
+    showUnsavedModal,
+    currentStep,
+    isSelectingAssignment,
+    assignmentId,
+  ])
+
+  useEffect(() => {
+    if (Capacitor.isNativePlatform()) return
+    if (typeof window === 'undefined') return
+
+    const handlePopState = () => {
+      const wasGuarded = hasGuardHistoryRef.current
+      hasGuardHistoryRef.current = false
+      const state = stateRef.current
+
+      // If user is explicitly discarding, allow navigation
+      if (isDiscardingRef.current) {
+        return
+      }
+
+      // If this back navigation occurred from an un-guarded clean state, allow default browser transition
+      if (!wasGuarded) {
+        return
+      }
+
+      // 1. If unsaved changes modal is open, first back dismisses it (stays on page)
+      if (state.showUnsavedModal) {
+        setShowUnsavedModal(false)
+        pendingNavigationRef.current = null
+        window.history.pushState({ unsavedGuard: true }, '', window.location.href)
+        hasGuardHistoryRef.current = true
+        return
+      }
+
+      // 2. If submission confirmation modal is open, first back closes it
+      if (state.showConfirmModal) {
+        setShowConfirmModal(false)
+        window.history.pushState({ unsavedGuard: true }, '', window.location.href)
+        hasGuardHistoryRef.current = true
+        return
+      }
+
+      // 3. Step 3 -> Step 2
+      if (state.currentStep === 3) {
+        setCurrentStep(2)
+        window.history.pushState({ unsavedGuard: true }, '', window.location.href)
+        hasGuardHistoryRef.current = true
+        return
+      }
+
+      // 4. Step 2 -> Step 1
+      if (state.currentStep === 2) {
+        setCurrentStep(1)
+        window.history.pushState({ unsavedGuard: true }, '', window.location.href)
+        hasGuardHistoryRef.current = true
+        return
+      }
+
+      // 5. If in assignment selection view but already had an active assignment, return to it
+      if (state.isSelectingAssignment && assignmentId) {
+        setIsSelectingAssignment(false)
+        window.history.pushState({ unsavedGuard: true }, '', window.location.href)
+        hasGuardHistoryRef.current = true
+        return
+      }
+
+      // 6. On Step 1 with unsaved changes, prompt before leaving
+      if (state.hasUnsavedChanges) {
+        pendingNavigationRef.current = () => {
+          isDiscardingRef.current = true
+          if (window.history.length > 1 && window.history.state?.idx !== 0) {
+            navigate(-1)
+          } else {
+            navigate('/professor')
+          }
+        }
+        setShowUnsavedModal(true)
+        return
+      }
+
+      // 7. Was guarded, but state reverted to clean: complete back navigation to previous page
+      isDiscardingRef.current = true
+      if (window.history.length > 1 && window.history.state?.idx !== 0) {
+        navigate(-1)
+      } else {
+        navigate('/professor')
+      }
+    }
+
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [assignmentId, navigate])
+
   // 1. Fetch professor record
   const {
     data: professor,
@@ -252,13 +368,6 @@ export default function MarkAttendancePage() {
     : (createdSessionId ?? dateSessionData?.id ?? null)
   const isDetectingSession = !rawSessionId && !createdSessionId && isCheckingDateSession
 
-  // Derived session_type from user selection, existing session, detected date session, or default
-  const sessionType: SessionType =
-    userSessionType ??
-    (existingSession?.session_type as SessionType) ??
-    (dateSessionData?.session_type as SessionType) ??
-    'lecture'
-
   // 4. Fetch existing session if sessionId was provided or discovered
   const {
     data: existingSession,
@@ -284,6 +393,13 @@ export default function MarkAttendancePage() {
       return data
     },
   })
+
+  // Derived session_type from user selection, existing session, detected date session, or default
+  const sessionType: SessionType =
+    userSessionType ??
+    (existingSession?.session_type as SessionType) ??
+    (dateSessionData?.session_type as SessionType) ??
+    'lecture'
 
   // 5. Fetch teaching assignment details if no existing session yet
   const {
@@ -367,7 +483,7 @@ export default function MarkAttendancePage() {
   // - For a new session: all students start as 'present'
   // - For an existing session: restore saved statuses
   useEffect(() => {
-    if (isDetectingSession) return
+    if (isDetectingSession || isDateSessionError) return
     if (!students || students.length === 0) return
 
     const resolution = resolveRosterInitializationState({
@@ -377,6 +493,8 @@ export default function MarkAttendancePage() {
       isRecordsLoading: !!effectiveSessionId && recordsLoading,
       isRecordsError: !!effectiveSessionId && isRecordsError,
       recordsError,
+      isSessionLookupError: !rawSessionId && !createdSessionId && isDateSessionError,
+      sessionLookupError: dateSessionError,
       currentRoster: Object.keys(rosterStatusRef.current).length > 0 ? rosterStatusRef.current : null,
       currentRosterSessionId: rosterSessionIdRef.current,
       sessionStatus: existingSession?.status,
@@ -400,6 +518,10 @@ export default function MarkAttendancePage() {
     }
   }, [
     isDetectingSession,
+    isDateSessionError,
+    dateSessionError,
+    rawSessionId,
+    createdSessionId,
     students,
     existingRecords,
     assignmentId,
@@ -527,6 +649,13 @@ export default function MarkAttendancePage() {
     mutationFn: async ({ submitFinal }: { submitFinal: boolean }) => {
       if (!profile || !assignmentId) throw new Error('Missing profile or assignment information')
 
+      if (!rawSessionId && !createdSessionId && isDateSessionError) {
+        throw new AttendanceGuardError(
+          'Cannot save or submit attendance because session lookup encountered an error.',
+          'UNRESOLVED_RECORDS'
+        )
+      }
+
       const operation = !submitFinal ? 'save_draft' : (!isSubmitted ? 'submit' : 'correct')
 
       const guard = evaluateAttendanceSaveAction({
@@ -544,6 +673,7 @@ export default function MarkAttendancePage() {
         existingRecords,
         isRecordsLoading: !!effectiveSessionId && recordsLoading,
         isRecordsError: !!effectiveSessionId && isRecordsError,
+        isSessionLookupError: !rawSessionId && !createdSessionId && isDateSessionError,
         editReason,
       })
 

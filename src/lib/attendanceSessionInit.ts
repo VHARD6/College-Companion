@@ -14,6 +14,10 @@ export interface ResolveRosterStateInput {
   isRecordsError: boolean
   /** Error object from the query if isRecordsError is true */
   recordsError?: unknown
+  /** Whether date-session auto-detection or existing session lookup encountered an error */
+  isSessionLookupError?: boolean
+  /** Error object from session lookup if isSessionLookupError is true */
+  sessionLookupError?: unknown
   /** In-memory roster state already held by the component, if any */
   currentRoster?: Record<number, AttendanceStatus> | null
   /** Session ID that currentRoster was initialized for. Used to verify roster identity */
@@ -61,9 +65,28 @@ export function resolveRosterInitializationState(
     isRecordsLoading,
     isRecordsError,
     recordsError,
+    isSessionLookupError,
+    sessionLookupError,
     currentRoster,
     currentRosterSessionId,
   } = input
+
+  // ─── Case 0: Session lookup / date-session auto-detection failed ───
+  // Fail-closed: Never interpret a failed lookup as a new session (sessionId: null)
+  // or default to all-present.
+  if (isSessionLookupError) {
+    const msg =
+      typeof sessionLookupError === 'object' &&
+      sessionLookupError !== null &&
+      'message' in sessionLookupError
+        ? String((sessionLookupError as any).message)
+        : 'Failed to verify existing session for this date.'
+    return {
+      state: 'QUERY_FAILED',
+      errorMessage: msg || 'Database query error while verifying existing session for this date.',
+      canRetry: true,
+    }
+  }
 
   // Check if in-memory roster belongs to the active session.
   // Fail-closed: an in-memory roster is preserved ONLY when its identity is explicitly
@@ -163,6 +186,8 @@ export interface SaveGuardInput {
   existingRecords: Array<{ student_id: number; status: string }> | undefined
   isRecordsLoading: boolean
   isRecordsError: boolean
+  /** Whether date-session auto-detection or existing session lookup encountered an error */
+  isSessionLookupError?: boolean
   editReason?: string
 }
 
@@ -215,8 +240,18 @@ export function evaluateAttendanceSaveAction(input: SaveGuardInput): SaveGuardRe
     existingRecords,
     isRecordsLoading,
     isRecordsError,
+    isSessionLookupError,
     editReason,
   } = input
+
+  // Session lookup failure enforcement (Edge Case 1)
+  if (isSessionLookupError) {
+    return {
+      allowed: false,
+      code: 'UNRESOLVED_RECORDS',
+      reason: 'Cannot save or submit attendance because session lookup encountered an error.',
+    }
+  }
 
   // Roster completeness
   if (studentsCount === 0 || !hasInMemoryRoster) {

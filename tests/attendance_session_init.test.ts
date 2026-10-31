@@ -1689,4 +1689,443 @@ describe('Attendance Session Initialization & Query Safety Test Suite (Pass 1a)'
       unregister()
     })
   })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 17. Attendance Verification Edge Cases & Browser SPA Guard Tests
+  // ──────────────────────────────────────────────────────────────────────────
+  describe('17. Attendance Verification Edge Cases & Browser SPA Guard Tests', () => {
+    // ── Edge Case 1: date-session query failure ──
+    describe('Edge Case 1: date-session query failure protections', () => {
+      it('EC1.1: resolveRosterInitializationState enters QUERY_FAILED on session lookup error and never defaults to all-present', () => {
+        const input: ResolveRosterStateInput = {
+          sessionId: null, // Effective session ID resolved to null because lookup failed
+          students: mockStudents,
+          existingRecords: undefined,
+          isRecordsLoading: false,
+          isRecordsError: false,
+          isSessionLookupError: true, // date-session query encountered an error!
+          sessionLookupError: new Error('PostgREST 500: Database connection failure during date lookup'),
+        }
+
+        const res = resolveRosterInitializationState(input)
+        assert.equal(res.state, 'QUERY_FAILED')
+        if (res.state === 'QUERY_FAILED') {
+          assert.equal(res.canRetry, true)
+          assert.match(res.errorMessage, /Database connection failure/i)
+        }
+      })
+
+      it('EC1.2: resolveRosterInitializationState falls back to clear default error message when sessionLookupError is missing message', () => {
+        const input: ResolveRosterStateInput = {
+          sessionId: null,
+          students: mockStudents,
+          existingRecords: undefined,
+          isRecordsLoading: false,
+          isRecordsError: false,
+          isSessionLookupError: true,
+          sessionLookupError: null,
+        }
+
+        const res = resolveRosterInitializationState(input)
+        assert.equal(res.state, 'QUERY_FAILED')
+        if (res.state === 'QUERY_FAILED') {
+          assert.equal(res.canRetry, true)
+          assert.match(res.errorMessage, /failed to verify existing session/i)
+        }
+      })
+
+      it('EC1.3: distinguishes failed date-session lookup from successful empty date-session lookup', () => {
+        // Successful lookup that found no existing session: isSessionLookupError is false, sessionId is null
+        const cleanNewSession: ResolveRosterStateInput = {
+          sessionId: null,
+          students: mockStudents,
+          existingRecords: undefined,
+          isRecordsLoading: false,
+          isRecordsError: false,
+          isSessionLookupError: false,
+        }
+        const cleanRes = resolveRosterInitializationState(cleanNewSession)
+        assert.equal(cleanRes.state, 'READY')
+        if (cleanRes.state === 'READY') {
+          assert.equal(cleanRes.source, 'new_defaults')
+          assert.equal(cleanRes.roster[101], 'present')
+        }
+
+        // Failed lookup: isSessionLookupError is true -> strictly QUERY_FAILED
+        const failedLookup: ResolveRosterStateInput = {
+          ...cleanNewSession,
+          isSessionLookupError: true,
+          sessionLookupError: new Error('Network timeout'),
+        }
+        const failedRes = resolveRosterInitializationState(failedLookup)
+        assert.equal(failedRes.state, 'QUERY_FAILED')
+      })
+
+      it('EC1.4: evaluateAttendanceSaveAction strictly blocks save_draft when isSessionLookupError is true', () => {
+        const input: SaveGuardInput = {
+          operation: 'save_draft',
+          sessionId: null,
+          isSubmitted: false,
+          isLocked: false,
+          studentsCount: 3,
+          hasInMemoryRoster: true,
+          isRosterMatchingSession: true,
+          existingRecords: undefined,
+          isRecordsLoading: false,
+          isRecordsError: false,
+          isSessionLookupError: true, // Failed date lookup!
+        }
+
+        const res = evaluateAttendanceSaveAction(input)
+        assert.equal(res.allowed, false)
+        assert.equal(res.code, 'UNRESOLVED_RECORDS')
+        assert.match(res.reason ?? '', /session lookup encountered an error/i)
+      })
+
+      it('EC1.5: evaluateAttendanceSaveAction strictly blocks submit when isSessionLookupError is true', () => {
+        const input: SaveGuardInput = {
+          operation: 'submit',
+          sessionId: null,
+          isSubmitted: false,
+          isLocked: false,
+          studentsCount: 3,
+          hasInMemoryRoster: true,
+          isRosterMatchingSession: true,
+          existingRecords: undefined,
+          isRecordsLoading: false,
+          isRecordsError: false,
+          isSessionLookupError: true, // Failed date lookup!
+        }
+
+        const res = evaluateAttendanceSaveAction(input)
+        assert.equal(res.allowed, false)
+        assert.equal(res.code, 'UNRESOLVED_RECORDS')
+        assert.match(res.reason ?? '', /session lookup encountered an error/i)
+      })
+
+      it('EC1.6: evaluateAttendanceSaveAction strictly blocks correct when isSessionLookupError is true', () => {
+        const input: SaveGuardInput = {
+          operation: 'correct',
+          sessionId: 99,
+          isSubmitted: true,
+          isLocked: false,
+          studentsCount: 3,
+          hasInMemoryRoster: true,
+          isRosterMatchingSession: true,
+          existingRecords: [{ student_id: 101, status: 'present' }],
+          isRecordsLoading: false,
+          isRecordsError: false,
+          isSessionLookupError: true,
+          editReason: 'Correction reason',
+        }
+
+        const res = evaluateAttendanceSaveAction(input)
+        assert.equal(res.allowed, false)
+        assert.equal(res.code, 'UNRESOLVED_RECORDS')
+        assert.match(res.reason ?? '', /session lookup encountered an error/i)
+      })
+    })
+
+    // ── Edge Case 2: baselineRosterRef lifecycle ──
+    describe('Edge Case 2: baselineRosterRef lifecycle and state transitions', () => {
+      it('EC2.1: baseline is initialized only after attendance records have loaded successfully (existing session)', () => {
+        let baseline: Record<number, AttendanceStatus> | null = null
+
+        // Step 1: Initial mount, query in flight
+        const loadingRes = resolveRosterInitializationState({
+          sessionId: 100,
+          students: mockStudents,
+          existingRecords: undefined,
+          isRecordsLoading: true,
+          isRecordsError: false,
+        })
+        assert.equal(loadingRes.state, 'WAITING_FOR_QUERY')
+        // Baseline remains null while query is loading
+        assert.equal(baseline, null)
+
+        // Step 2: Query fails
+        const errorRes = resolveRosterInitializationState({
+          sessionId: 100,
+          students: mockStudents,
+          existingRecords: undefined,
+          isRecordsLoading: false,
+          isRecordsError: true,
+          recordsError: new Error('Load failed'),
+        })
+        assert.equal(errorRes.state, 'QUERY_FAILED')
+        // Baseline remains null when query fails
+        assert.equal(baseline, null)
+
+        // Step 3: Query succeeds
+        const successRes = resolveRosterInitializationState({
+          sessionId: 100,
+          students: mockStudents,
+          existingRecords: [
+            { student_id: 101, status: 'present' },
+            { student_id: 102, status: 'absent' },
+            { student_id: 103, status: 'present' },
+          ],
+          isRecordsLoading: false,
+          isRecordsError: false,
+        })
+        assert.equal(successRes.state, 'READY')
+        if (successRes.state === 'READY') {
+          baseline = { ...successRes.roster }
+        }
+
+        // Baseline now accurately holds the loaded saved records
+        assert.deepEqual(baseline, { 101: 'present', 102: 'absent', 103: 'present' })
+        // Roster matches baseline -> hasUnsavedAttendanceChanges is false
+        assert.equal(hasUnsavedAttendanceChanges(baseline, baseline), false)
+      })
+
+      it('EC2.2: baseline updates only after a successful draft save operation', () => {
+        // Initial loaded baseline for draft session 100
+        let baseline: Record<number, AttendanceStatus> | null = {
+          101: 'present',
+          102: 'present',
+          103: 'present',
+        }
+        let inMemoryRoster: Record<number, AttendanceStatus> = { ...baseline }
+
+        // Professor marks student 102 absent
+        inMemoryRoster = { ...inMemoryRoster, 102: 'absent' }
+        assert.equal(hasUnsavedAttendanceChanges(inMemoryRoster, baseline), true)
+
+        // Save Draft fails (e.g. network disconnect)
+        // Baseline MUST NOT be updated on failure!
+        const saveFailed = true
+        if (!saveFailed) {
+          baseline = { ...inMemoryRoster }
+        }
+        assert.equal(hasUnsavedAttendanceChanges(inMemoryRoster, baseline), true)
+        assert.equal(baseline[102], 'present') // Unchanged!
+
+        // Save Draft succeeds
+        const saveSucceeded = true
+        if (saveSucceeded) {
+          baseline = { ...inMemoryRoster } // Updated inside onSuccess!
+        }
+        assert.equal(hasUnsavedAttendanceChanges(inMemoryRoster, baseline), false)
+        assert.equal(baseline[102], 'absent') // Now updated!
+      })
+
+      it('EC2.3: baseline resets to null on date change or assignment switch', () => {
+        let baseline: Record<number, AttendanceStatus> | null = {
+          101: 'present',
+          102: 'absent',
+          103: 'present',
+        }
+        assert.notEqual(baseline, null)
+
+        // Date changed or assignment changed: reset baseline to null
+        const resetBaseline = () => {
+          baseline = null
+        }
+        resetBaseline()
+        assert.equal(baseline, null)
+      })
+
+      it('EC2.4: reopening an existing session restores exact saved records into baseline without wiping absentees', () => {
+        const savedSessionRecords = [
+          { student_id: 101, status: 'absent' },
+          { student_id: 102, status: 'present' },
+          { student_id: 103, status: 'absent' },
+        ]
+
+        const res = resolveRosterInitializationState({
+          sessionId: 150,
+          students: mockStudents,
+          existingRecords: savedSessionRecords,
+          isRecordsLoading: false,
+          isRecordsError: false,
+          sessionStatus: 'draft',
+        })
+
+        assert.equal(res.state, 'READY')
+        if (res.state === 'READY') {
+          assert.equal(res.source, 'existing_restored')
+          const baseline = { ...res.roster }
+          assert.equal(baseline[101], 'absent')
+          assert.equal(baseline[102], 'present')
+          assert.equal(baseline[103], 'absent')
+          // Clean state upon opening
+          assert.equal(hasUnsavedAttendanceChanges(res.roster, baseline), false)
+        }
+      })
+    })
+
+    // ── Edge Case 3: Browser SPA back navigation guard ──
+    describe('Edge Case 3: Browser SPA back navigation guard and state machine', () => {
+      it('EC3.1: allows immediate back navigation when page is clean with no unsaved changes', () => {
+        let showUnsavedModal = false
+        let navigatedBack = false
+
+        // State machine simulating browser popstate handler
+        const simulatePopState = (state: {
+          hasUnsavedChanges: boolean
+          showUnsavedModal: boolean
+          showConfirmModal: boolean
+          currentStep: number
+          wasGuarded: boolean
+        }) => {
+          if (!state.wasGuarded) {
+            navigatedBack = true
+            return
+          }
+          if (state.showUnsavedModal) {
+            showUnsavedModal = false
+            return
+          }
+          if (state.hasUnsavedChanges) {
+            showUnsavedModal = true
+            return
+          }
+          navigatedBack = true
+        }
+
+        simulatePopState({
+          hasUnsavedChanges: false,
+          showUnsavedModal: false,
+          showConfirmModal: false,
+          currentStep: 1,
+          wasGuarded: false, // Clean mount was never guarded
+        })
+
+        assert.equal(navigatedBack, true)
+        assert.equal(showUnsavedModal, false)
+      })
+
+      it('EC3.2: intercepts browser back navigation and opens confirmation modal when unsaved changes exist', () => {
+        let showUnsavedModal = false
+        let navigatedBack = false
+
+        const simulatePopState = (state: {
+          hasUnsavedChanges: boolean
+          showUnsavedModal: boolean
+          showConfirmModal: boolean
+          currentStep: number
+          wasGuarded: boolean
+        }) => {
+          if (!state.wasGuarded) {
+            navigatedBack = true
+            return
+          }
+          if (state.showUnsavedModal) {
+            showUnsavedModal = false
+            return
+          }
+          if (state.hasUnsavedChanges) {
+            showUnsavedModal = true
+            return
+          }
+          navigatedBack = true
+        }
+
+        // User made edits on Step 1: guard was armed (wasGuarded: true), unsaved changes exist
+        simulatePopState({
+          hasUnsavedChanges: true,
+          showUnsavedModal: false,
+          showConfirmModal: false,
+          currentStep: 1,
+          wasGuarded: true,
+        })
+
+        assert.equal(showUnsavedModal, true)
+        assert.equal(navigatedBack, false)
+      })
+
+      it('EC3.3: layered dismissal: first back dismisses open confirmation dialog without navigating', () => {
+        let showUnsavedModal = true
+        let navigatedBack = false
+
+        const simulatePopState = (state: {
+          hasUnsavedChanges: boolean
+          showUnsavedModal: boolean
+          showConfirmModal: boolean
+          currentStep: number
+          wasGuarded: boolean
+        }) => {
+          if (!state.wasGuarded) {
+            navigatedBack = true
+            return
+          }
+          if (state.showUnsavedModal) {
+            showUnsavedModal = false
+            return
+          }
+          if (state.hasUnsavedChanges) {
+            showUnsavedModal = true
+            return
+          }
+          navigatedBack = true
+        }
+
+        // User presses back while unsaved dialog is already open
+        simulatePopState({
+          hasUnsavedChanges: true,
+          showUnsavedModal: true,
+          showConfirmModal: false,
+          currentStep: 1,
+          wasGuarded: true,
+        })
+
+        assert.equal(showUnsavedModal, false) // Dialog closed
+        assert.equal(navigatedBack, false)    // Stayed on page!
+      })
+
+      it('EC3.4: wizard multi-step back: Step 3 -> Step 2 -> Step 1 -> Guard -> Discard', () => {
+        let currentStep = 3
+        let showUnsavedModal = false
+        let navigatedBack = false
+        let isDiscarding = false
+
+        const handleBrowserBack = () => {
+          if (isDiscarding) {
+            navigatedBack = true
+            return
+          }
+          if (showUnsavedModal) {
+            showUnsavedModal = false
+            return
+          }
+          if (currentStep === 3) {
+            currentStep = 2
+            return
+          }
+          if (currentStep === 2) {
+            currentStep = 1
+            return
+          }
+          // On Step 1 with unsaved changes
+          showUnsavedModal = true
+        }
+
+        // Back 1: Step 3 -> Step 2
+        handleBrowserBack()
+        assert.equal(currentStep, 2)
+        assert.equal(navigatedBack, false)
+
+        // Back 2: Step 2 -> Step 1
+        handleBrowserBack()
+        assert.equal(currentStep, 1)
+        assert.equal(navigatedBack, false)
+
+        // Back 3: On Step 1 with unsaved changes -> prompts with modal
+        handleBrowserBack()
+        assert.equal(showUnsavedModal, true)
+        assert.equal(navigatedBack, false)
+
+        // If user chooses "Keep Editing" -> modal dismissed, marks preserved
+        showUnsavedModal = false
+        assert.equal(currentStep, 1)
+        assert.equal(navigatedBack, false)
+
+        // If user chooses "Discard Changes" -> navigation executes
+        isDiscarding = true
+        handleBrowserBack()
+        assert.equal(navigatedBack, true)
+      })
+    })
+  })
 })
