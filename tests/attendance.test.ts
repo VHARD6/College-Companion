@@ -6,6 +6,7 @@ import {
   calcNeeded,
   calcWhatIf,
   classifyStatus,
+  computeSubjectAttendanceSummaries,
 } from '../src/lib/attendance.ts'
 
 describe('Attendance Formulas & Edge Cases Test Suite', () => {
@@ -120,6 +121,89 @@ describe('Attendance Formulas & Edge Cases Test Suite', () => {
       assert.equal(classifyStatus(64.9, 75), 'danger')
       assert.equal(classifyStatus(30, 75), 'danger')
       assert.equal(classifyStatus(0, 75), 'danger')
+    })
+  })
+
+  describe('computeSubjectAttendanceSummaries (O(1) Batched Aggregation)', () => {
+    const sub1 = { id: 1, name: 'Data Structures', code: 'CS301', type: 'theory' }
+    const sub2 = { id: 2, name: 'DS Lab', code: 'CS311', type: 'practical' }
+
+    const assignments = [
+      { id: 10, subjects: sub1, batch_id: null },
+      { id: 20, subjects: sub2, batch_id: 1 },
+    ]
+
+    it('returns empty array when assignments list is empty', () => {
+      const result = computeSubjectAttendanceSummaries([], [], [], 75)
+      assert.deepEqual(result, [])
+    })
+
+    it('handles subjects with 0 sessions held cleanly with null percentage', () => {
+      const result = computeSubjectAttendanceSummaries(assignments, [], [], 75)
+      assert.equal(result.length, 2)
+      assert.equal(result[0].held, 0)
+      assert.equal(result[0].attended, 0)
+      assert.equal(result[0].percent, null)
+      assert.equal(result[0].status, 'unknown')
+
+      assert.equal(result[1].held, 0)
+      assert.equal(result[1].attended, 0)
+      assert.equal(result[1].percent, null)
+      assert.equal(result[1].status, 'unknown')
+    })
+
+    it('correctly maps sessions and present records to respective assignments', () => {
+      const sessions = [
+        // Assignment 10: 4 sessions
+        { id: 101, teaching_assignment_id: 10 },
+        { id: 102, teaching_assignment_id: 10 },
+        { id: 103, teaching_assignment_id: 10 },
+        { id: 104, teaching_assignment_id: 10 },
+        // Assignment 20: 2 sessions
+        { id: 201, teaching_assignment_id: 20 },
+        { id: 202, teaching_assignment_id: 20 },
+      ]
+
+      const records = [
+        // Attended 3 out of 4 for Assignment 10
+        { session_id: 101, status: 'present' },
+        { session_id: 102, status: 'present' },
+        { session_id: 103, status: 'present' },
+        { session_id: 104, status: 'absent' }, // Not counted!
+        // Attended 1 out of 2 for Assignment 20
+        { session_id: 201, status: 'present' },
+        { session_id: 202, status: 'absent' },
+      ]
+
+      const result = computeSubjectAttendanceSummaries(assignments, sessions, records, 75)
+      assert.equal(result.length, 2)
+
+      // Sub 1: 3/4 = 75% -> safe
+      assert.equal(result[0].held, 4)
+      assert.equal(result[0].attended, 3)
+      assert.equal(result[0].percent, 75)
+      assert.equal(result[0].status, 'safe')
+
+      // Sub 2: 1/2 = 50% -> danger
+      assert.equal(result[1].held, 2)
+      assert.equal(result[1].attended, 1)
+      assert.equal(result[1].percent, 50)
+      assert.equal(result[1].status, 'danger')
+    })
+
+    it('ignores present records from unrelated sessions not belonging to the student assignments', () => {
+      const sessions = [
+        { id: 101, teaching_assignment_id: 10 },
+      ]
+      const records = [
+        { session_id: 101, status: 'present' },
+        { session_id: 999, status: 'present' }, // Unrelated session!
+      ]
+
+      const result = computeSubjectAttendanceSummaries(assignments, sessions, records, 75)
+      assert.equal(result[0].held, 1)
+      assert.equal(result[0].attended, 1)
+      assert.equal(result[0].percent, 100)
     })
   })
 })

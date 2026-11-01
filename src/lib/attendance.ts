@@ -75,3 +75,75 @@ export function classifyStatus(
   if (percent >= threshold - 10) return 'warning'  // within 10% of threshold
   return 'danger'
 }
+
+export interface RawSessionRef {
+  id: number
+  teaching_assignment_id: number
+}
+
+export interface RawAttendanceRecordRef {
+  session_id: number
+  status: string
+}
+
+export interface AssignmentWithSubject {
+  id: number
+  batch_id?: number | null
+  subjects: unknown
+}
+
+/**
+ * Computes per-subject attendance summaries in constant O(1) database queries
+ * by joining sessions and attendance records in-memory, eliminating client-side N+1 roundtrips.
+ */
+export function computeSubjectAttendanceSummaries(
+  relevantAssignments: AssignmentWithSubject[],
+  sessions: RawSessionRef[],
+  presentRecords: RawAttendanceRecordRef[],
+  threshold: number
+): import('../types').SubjectAttendanceSummary[] {
+  // Index session IDs where this student was marked present
+  const presentSessionIds = new Set<number>()
+  for (const record of presentRecords) {
+    if (record.status === 'present') {
+      presentSessionIds.add(record.session_id)
+    }
+  }
+
+  // Index sessions by teaching_assignment_id
+  const sessionsByAssignment = new Map<number, RawSessionRef[]>()
+  for (const sess of sessions) {
+    const list = sessionsByAssignment.get(sess.teaching_assignment_id)
+    if (list) {
+      list.push(sess)
+    } else {
+      sessionsByAssignment.set(sess.teaching_assignment_id, [sess])
+    }
+  }
+
+  // Compute summary per assignment
+  const summaries: import('../types').SubjectAttendanceSummary[] = []
+  for (const assignment of relevantAssignments) {
+    const subject = assignment.subjects as any
+    const assignmentSessions = sessionsByAssignment.get(assignment.id) ?? []
+    const held = assignmentSessions.length
+    let attended = 0
+
+    for (const sess of assignmentSessions) {
+      if (presentSessionIds.has(sess.id)) {
+        attended++
+      }
+    }
+
+    const percent = calcPercent(attended, held)
+    summaries.push({
+      subject,
+      attended,
+      held,
+      percent,
+      status: classifyStatus(percent, threshold) as 'safe' | 'warning' | 'danger',
+    })
+  }
+
+  return summaries
+}

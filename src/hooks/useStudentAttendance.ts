@@ -1,16 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
 import { supabase } from '../lib/supabase'
-import { calcPercent, classifyStatus } from '../lib/attendance'
+import { computeSubjectAttendanceSummaries } from '../lib/attendance'
 import type { SubjectAttendanceSummary } from '../types'
 
 /**
  * Fetches all attendance data for the current student
  * and returns per-subject summaries.
- * Throws explicit errors so consumers can distinguish network/backend failures
- * from empty enrollment or 0 classes held.
+ * Optimized to execute in constant O(1) batched database queries,
+ * eliminating the client-side N+1 query loop.
  */
 export function useStudentAttendance(studentId: number | undefined, threshold: number) {
-  return useQuery({
+  return useQuery<SubjectAttendanceSummary[]>({
     queryKey: ['student-attendance', studentId],
     enabled: !!studentId,
     queryFn: async () => {
@@ -40,50 +40,42 @@ export function useStudentAttendance(studentId: number | undefined, threshold: n
         a.batch_id === null || a.batch_id === studentData.batch_id
       )
 
-      // 3. For each assignment, count sessions held and student's attendance
-      const summaries: SubjectAttendanceSummary[] = []
+      const assignmentIds = relevantAssignments.map(a => a.id)
+      if (assignmentIds.length === 0) return []
 
-      for (const assignment of relevantAssignments) {
-        const subject = assignment.subjects as any
+      // 3. Batched fetch: all submitted sessions for all relevant assignments in 1 query
+      const { data: allSessions, error: sessErr } = await supabase
+        .from('sessions')
+        .select('id, teaching_assignment_id')
+        .in('teaching_assignment_id', assignmentIds)
+        .eq('status', 'submitted')
 
-        // Get submitted sessions for this assignment
-        const { data: sessions, count: held, error: sessErr } = await supabase
-          .from('sessions')
-          .select('id', { count: 'exact' })
-          .eq('teaching_assignment_id', assignment.id)
-          .eq('status', 'submitted')
+      if (sessErr) throw sessErr
 
-        if (sessErr) throw sessErr
+      const sessions = allSessions ?? []
+      const sessionIds = sessions.map(s => s.id)
 
-        const h = held ?? sessions?.length ?? 0
-        let a = 0
+      // 4. Batched fetch: all present attendance records for this student in 1 query
+      let presentRecords: Array<{ session_id: number; status: string }> = []
+      if (sessionIds.length > 0) {
+        const { data: records, error: arErr } = await supabase
+          .from('attendance_records')
+          .select('session_id, status')
+          .eq('student_id', studentId)
+          .eq('status', 'present')
+          .in('session_id', sessionIds)
 
-        // Only query attendance_records if at least one session has been held
-        if (h > 0 && sessions && sessions.length > 0) {
-          const sessionIds = sessions.map(s => s.id)
-          const { count: attended, error: arErr } = await supabase
-            .from('attendance_records')
-            .select('id', { count: 'exact' })
-            .eq('student_id', studentId)
-            .eq('status', 'present')
-            .in('session_id', sessionIds)
-
-          if (arErr) throw arErr
-          a = attended ?? 0
-        }
-
-        const percent = calcPercent(a, h)
-
-        summaries.push({
-          subject,
-          attended: a,
-          held: h,
-          percent,
-          status: classifyStatus(percent, threshold) as 'safe' | 'warning' | 'danger',
-        })
+        if (arErr) throw arErr
+        presentRecords = records ?? []
       }
 
-      return summaries
+      // 5. In-memory summary aggregation (O(1) database queries)
+      return computeSubjectAttendanceSummaries(
+        relevantAssignments,
+        sessions,
+        presentRecords,
+        threshold
+      )
     },
   })
 }
