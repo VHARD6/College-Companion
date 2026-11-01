@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
 import { normalizeEmail, validateEmail, validatePassword } from '../../lib/authUtils'
 import Button from '../../components/ui/Button'
@@ -714,6 +714,14 @@ export default function LoginPage() {
                   Create Student Account
                 </Button>
 
+                <p className="text-[11px] text-gray-500 text-center leading-relaxed">
+                  By registering, you acknowledge our{' '}
+                  <Link to="/privacy" className="text-blue-600 underline font-medium">
+                    Institutional Data Protection Policy
+                  </Link>{' '}
+                  pursuant to the DPDP Act 2023.
+                </p>
+
                 <p className="text-center text-xs text-gray-500 pt-1">
                   Already have an account?{' '}
                   <button
@@ -832,6 +840,18 @@ export default function LoginPage() {
                   ? 'Professor or Administrator? Tap "Staff / Faculty" above.'
                   : 'Enrolled student? Tap "Student Portal" above to sign in or register.'}
               </p>
+              <div className="mt-2.5">
+                <Link
+                  to="/privacy"
+                  className={`text-[11px] underline transition-colors ${
+                    isStudent
+                      ? 'text-gray-400 hover:text-gray-600'
+                      : 'text-slate-500 hover:text-slate-400'
+                  }`}
+                >
+                  Institutional Data Protection &amp; Student Privacy Rights (DPDP Act 2023)
+                </Link>
+              </div>
             </div>
           </>
         )}

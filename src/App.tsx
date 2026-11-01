@@ -5,6 +5,7 @@ import { Toaster } from 'react-hot-toast'
 // ─── Auth ────────────────────────────────────────────────────────────────────
 import LoginPage from './pages/auth/LoginPage'
 import UnauthorizedPage from './pages/auth/UnauthorizedPage'
+import PrivacyPolicyPage from './pages/public/PrivacyPolicyPage'
 import ProtectedRoute from './components/ui/ProtectedRoute'
 
 // ─── Student ─────────────────────────────────────────────────────────────────
@@ -97,6 +98,7 @@ export default function App() {
           {/* Public routes */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="/unauthorized" element={<UnauthorizedPage />} />
+          <Route path="/privacy" element={<PrivacyPolicyPage />} />
 
           {/* Student routes */}
           <Route

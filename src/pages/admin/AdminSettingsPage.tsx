@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
 import TopBar from '../../components/ui/TopBar'
@@ -7,6 +8,7 @@ import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Spinner from '../../components/ui/Spinner'
 import toast from 'react-hot-toast'
+import { Shield, ExternalLink } from 'lucide-react'
 
 export default function AdminSettingsPage() {
   const queryClient = useQueryClient()
@@ -81,6 +83,24 @@ export default function AdminSettingsPage() {
 
         {/* Academic structure link */}
         <StructureSummary />
+
+        {/* Data Protection & Compliance Governance */}
+        <Card>
+          <div className="flex items-center gap-2 mb-2">
+            <Shield className="text-blue-600" size={18} />
+            <h2 className="font-semibold text-gray-900 text-sm">Data Protection &amp; Privacy Governance</h2>
+          </div>
+          <p className="text-xs text-gray-500 mb-3 leading-relaxed">
+            Institutional compliance overview under the Digital Personal Data Protection Act (DPDP Act 2023), FERPA, and academic record confidentiality standards.
+          </p>
+          <Link
+            to="/privacy"
+            className="inline-flex items-center justify-between w-full p-2.5 rounded-xl border border-blue-100 bg-blue-50/60 hover:bg-blue-50 text-xs font-medium text-blue-700 transition-colors"
+          >
+            <span>View Institutional Privacy Notice &amp; DPO Details</span>
+            <ExternalLink size={14} />
+          </Link>
+        </Card>
       </div>
     </div>
   )
