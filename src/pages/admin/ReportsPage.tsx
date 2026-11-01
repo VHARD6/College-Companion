@@ -5,23 +5,30 @@ import TopBar from '../../components/ui/TopBar'
 import Spinner from '../../components/ui/Spinner'
 import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
+import PaginationControls from '../../components/ui/PaginationControls'
+import { calcPageRange, calcTotalPages } from '../../lib/pagination'
 import { formatDate } from '../../lib/utils'
 import { History, FileText, AlertCircle, RefreshCw } from 'lucide-react'
 
+const PAGE_SIZE = 20
+
 export default function ReportsPage() {
   const [activeTab, setActiveTab] = useState<'sessions' | 'audit'>('sessions')
+  const [sessionsPage, setSessionsPage] = useState(1)
+  const [auditPage, setAuditPage] = useState(1)
 
-  // Recent submitted sessions
+  // Recent submitted sessions with server-side range pagination
   const {
-    data: sessions,
+    data: sessionsData,
     isLoading: sessionsLoading,
     isError: isSessionsError,
     error: sessionsError,
     refetch: refetchSessions,
   } = useQuery({
-    queryKey: ['admin-submitted-sessions'],
+    queryKey: ['admin-submitted-sessions', sessionsPage],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { from, to } = calcPageRange(sessionsPage, PAGE_SIZE)
+      const { data, count, error } = await supabase
         .from('sessions')
         .select(`
           id,
@@ -35,26 +42,31 @@ export default function ReportsPage() {
             classes(name),
             batches(name)
           )
-        `)
+        `, { count: 'exact' })
         .eq('status', 'submitted')
         .order('submitted_at', { ascending: false })
-        .limit(30)
+        .range(from, to)
+
       if (error) throw error
-      return data ?? []
+      return {
+        items: data ?? [],
+        totalCount: count ?? 0,
+      }
     },
   })
 
-  // Audit logs query
+  // Audit logs query with server-side range pagination
   const {
-    data: auditLogs,
+    data: auditData,
     isLoading: auditLoading,
     isError: isAuditError,
     error: auditError,
     refetch: refetchAudit,
   } = useQuery({
-    queryKey: ['admin-audit-logs'],
+    queryKey: ['admin-audit-logs', auditPage],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { from, to } = calcPageRange(auditPage, PAGE_SIZE)
+      const { data, count, error } = await supabase
         .from('attendance_audit_log')
         .select(`
           id,
@@ -77,13 +89,22 @@ export default function ReportsPage() {
               )
             )
           )
-        `)
+        `, { count: 'exact' })
         .order('changed_at', { ascending: false })
-        .limit(50)
+        .range(from, to)
+
       if (error) throw error
-      return data ?? []
+      return {
+        items: data ?? [],
+        totalCount: count ?? 0,
+      }
     },
   })
+
+  const sessions = sessionsData?.items ?? []
+  const sessionsTotal = sessionsData?.totalCount ?? 0
+  const auditLogs = auditData?.items ?? []
+  const auditTotal = auditData?.totalCount ?? 0
 
   return (
     <div className="min-h-screen bg-gray-50 pb-20">
@@ -122,9 +143,16 @@ export default function ReportsPage() {
         {/* SESSIONS TAB */}
         {activeTab === 'sessions' && (
           <div>
-            <h3 className="font-semibold text-gray-700 text-sm uppercase tracking-wide mb-3">
-              Submitted Attendance Sessions ({sessions?.length ?? 0})
-            </h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-gray-700 text-sm uppercase tracking-wide">
+                Submitted Attendance Sessions
+              </h3>
+              {sessionsTotal > 0 && (
+                <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full font-medium">
+                  Total: {sessionsTotal}
+                </span>
+              )}
+            </div>
 
             {sessionsLoading ? (
               <div className="flex justify-center py-12"><Spinner className="h-8 w-8" /></div>
@@ -138,11 +166,11 @@ export default function ReportsPage() {
                   Retry
                 </Button>
               </div>
-            ) : sessions?.length === 0 ? (
+            ) : sessions.length === 0 ? (
               <p className="text-center text-gray-400 py-8 text-sm">No submitted sessions yet</p>
             ) : (
               <div className="space-y-2">
-                {sessions?.map(s => {
+                {sessions.map(s => {
                   const ta = s.teaching_assignments as any
                   const subj = ta?.subjects
                   const cls = ta?.classes
@@ -169,6 +197,15 @@ export default function ReportsPage() {
                     </div>
                   )
                 })}
+
+                <PaginationControls
+                  currentPage={sessionsPage}
+                  totalPages={calcTotalPages(sessionsTotal, PAGE_SIZE)}
+                  totalCount={sessionsTotal}
+                  pageSize={PAGE_SIZE}
+                  onPageChange={setSessionsPage}
+                  isLoading={sessionsLoading}
+                />
               </div>
             )}
           </div>
@@ -177,13 +214,20 @@ export default function ReportsPage() {
         {/* AUDIT LOG TAB */}
         {activeTab === 'audit' && (
           <div>
-            <div className="mb-3">
-              <h3 className="font-semibold text-gray-700 text-sm uppercase tracking-wide">
-                Attendance Audit Log
-              </h3>
-              <p className="text-xs text-gray-500">
-                Immutable trail of all attendance modifications after submission.
-              </p>
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="font-semibold text-gray-700 text-sm uppercase tracking-wide">
+                  Attendance Audit Log
+                </h3>
+                <p className="text-xs text-gray-500">
+                  Immutable trail of all attendance modifications after submission.
+                </p>
+              </div>
+              {auditTotal > 0 && (
+                <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full font-medium">
+                  Total: {auditTotal}
+                </span>
+              )}
             </div>
 
             {auditLoading ? (
@@ -198,11 +242,11 @@ export default function ReportsPage() {
                   Retry
                 </Button>
               </div>
-            ) : auditLogs?.length === 0 ? (
+            ) : auditLogs.length === 0 ? (
               <p className="text-center text-gray-400 py-8 text-sm">No audit logs recorded yet</p>
             ) : (
               <div className="space-y-2">
-                {auditLogs?.map(log => {
+                {auditLogs.map(log => {
                   const changer = (log as any).profiles?.name ?? 'Admin / Prof'
                   const rec = (log as any).attendance_records
                   const student = rec?.students
@@ -255,6 +299,15 @@ export default function ReportsPage() {
                     </div>
                   )
                 })}
+
+                <PaginationControls
+                  currentPage={auditPage}
+                  totalPages={calcTotalPages(auditTotal, PAGE_SIZE)}
+                  totalCount={auditTotal}
+                  pageSize={PAGE_SIZE}
+                  onPageChange={setAuditPage}
+                  isLoading={auditLoading}
+                />
               </div>
             )}
           </div>

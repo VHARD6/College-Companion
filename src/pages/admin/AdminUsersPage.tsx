@@ -14,6 +14,8 @@ import { normalizeEmail, validateEmail, validatePassword } from '../../lib/authU
 import type { Role } from '../../types'
 
 import { extractSingleRelation, parseCsvInput, evaluateCsvImportOutcome } from '../../lib/adminUtils'
+import PaginationControls from '../../components/ui/PaginationControls'
+import { calcPageRange, calcTotalPages } from '../../lib/pagination'
 
 interface NewUserForm {
   name: string
@@ -32,6 +34,8 @@ export default function AdminUsersPage() {
   const [showCsvImport, setShowCsvImport] = useState(false)
   const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState<'all' | Role>('all')
+  const [page, setPage] = useState(1)
+  const pageSize = 25
 
   // Creation form state
   const [form, setForm] = useState<NewUserForm>({
@@ -56,17 +60,34 @@ export default function AdminUsersPage() {
   const [csvText, setCsvText] = useState('')
   const [isImporting, setIsImporting] = useState(false)
 
-  // Fetch all user profiles with attached student & professor records
+  // Fetch user profiles with attached student & professor records using server-side range pagination
   const {
-    data: users,
+    data: usersData,
     isLoading: isUsersLoading,
     isError: isUsersError,
     error: usersError,
     refetch: refetchUsers,
   } = useQuery({
-    queryKey: ['admin-users'],
+    queryKey: ['admin-users', roleFilter, page, search.trim()],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { from, to } = calcPageRange(page, pageSize)
+      const trimmedSearch = search.trim()
+
+      let matchingUserIds: string[] = []
+      if (trimmedSearch) {
+        // If search looks like it could match roll number, find matching student records
+        const { data: studentMatches } = await supabase
+          .from('students')
+          .select('user_id')
+          .ilike('roll_no', `%${trimmedSearch}%`)
+          .limit(50)
+
+        if (studentMatches && studentMatches.length > 0) {
+          matchingUserIds = studentMatches.map(s => s.user_id)
+        }
+      }
+
+      let query = supabase
         .from('profiles')
         .select(`
           *,
@@ -89,10 +110,28 @@ export default function AdminUsersPage() {
             department_id,
             departments(id, name)
           )
-        `)
-        .order('created_at', { ascending: false })
+        `, { count: 'exact' })
+
+      if (roleFilter !== 'all') {
+        query = query.eq('role', roleFilter)
+      }
+
+      if (trimmedSearch) {
+        if (matchingUserIds.length > 0) {
+          query = query.or(`name.ilike.%${trimmedSearch}%,id.in.(${matchingUserIds.join(',')})`)
+        } else {
+          query = query.ilike('name', `%${trimmedSearch}%`)
+        }
+      }
+
+      query = query.order('created_at', { ascending: false }).range(from, to)
+
+      const { data, count, error } = await query
       if (error) throw error
-      return data ?? []
+      return {
+        items: data ?? [],
+        totalCount: count ?? 0,
+      }
     },
   })
 
@@ -476,22 +515,10 @@ export default function AdminUsersPage() {
     }
   }
 
-  // Filtered user list
-  const filteredUsers = users?.filter(u => {
-    const matchesRole = roleFilter === 'all' || u.role === roleFilter
-    const q = search.toLowerCase().trim()
-    const studentRec = extractSingleRelation(u.students)
-    const profRec = extractSingleRelation(u.professors)
-    const matchesSearch =
-      !q ||
-      u.name.toLowerCase().includes(q) ||
-      u.id.toLowerCase().includes(q) ||
-      studentRec?.roll_no?.toLowerCase().includes(q) ||
-      studentRec?.classes?.name?.toLowerCase().includes(q) ||
-      profRec?.departments?.name?.toLowerCase().includes(q)
-
-    return matchesRole && matchesSearch
-  })
+  // Paginated user list
+  const users = usersData?.items ?? []
+  const totalUsersCount = usersData?.totalCount ?? 0
+  const filteredUsers = users
 
   const roleBadge: Record<string, 'blue' | 'green' | 'gray'> = {
     admin: 'blue',
@@ -807,27 +834,41 @@ export default function AdminUsersPage() {
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
               className="w-full pl-9 pr-3 py-2 rounded-xl border border-gray-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Search by name, roll no, or class..."
+              placeholder="Search by name or roll no..."
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={e => {
+                setSearch(e.target.value)
+                setPage(1)
+              }}
             />
           </div>
 
-          <div className="flex gap-1.5 overflow-x-auto pb-1">
-            {(['all', 'student', 'professor', 'admin'] as const).map(r => (
-              <button
-                key={r}
-                type="button"
-                className={`px-3 py-1 text-xs rounded-full capitalize font-medium transition-colors ${
-                  roleFilter === r
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-100'
-                }`}
-                onClick={() => setRoleFilter(r)}
-              >
-                {r === 'all' ? 'All Roles' : `${r}s`}
-              </button>
-            ))}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex gap-1.5 overflow-x-auto pb-1">
+              {(['all', 'student', 'professor', 'admin'] as const).map(r => (
+                <button
+                  key={r}
+                  type="button"
+                  className={`px-3 py-1 text-xs rounded-full capitalize font-medium transition-colors ${
+                    roleFilter === r
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-100'
+                  }`}
+                  onClick={() => {
+                    setRoleFilter(r)
+                    setPage(1)
+                  }}
+                >
+                  {r === 'all' ? 'All Roles' : `${r}s`}
+                </button>
+              ))}
+            </div>
+
+            {totalUsersCount > 0 && (
+              <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full font-medium shrink-0">
+                Total: {totalUsersCount}
+              </span>
+            )}
           </div>
         </div>
 
@@ -947,6 +988,15 @@ export default function AdminUsersPage() {
                 </div>
               )
             })}
+
+            <PaginationControls
+              currentPage={page}
+              totalPages={calcTotalPages(totalUsersCount, pageSize)}
+              totalCount={totalUsersCount}
+              pageSize={pageSize}
+              onPageChange={setPage}
+              isLoading={isUsersLoading}
+            />
           </div>
         )}
       </div>
