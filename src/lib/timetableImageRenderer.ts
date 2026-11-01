@@ -73,7 +73,7 @@ export async function renderTimetableToCanvas(
 
   const coordTop = gridBottom + 16
   const coordHeaderHeight = 24
-  const coordRowHeight = 28
+  const coordRowHeight = 36
   const coordBottom = coordTop + coordHeaderHeight + coordRowHeight
 
   const noteTop = coordBottom + 14
@@ -129,20 +129,24 @@ export async function renderTimetableToCanvas(
   ctx.font = 'bold 15px "Times New Roman", Times, serif'
   ctx.fillText("MAHARASHTRA EDUCATION SOCIETY'S", textCenterX, headerTop + 32)
 
-  ctx.font = 'bold 18px "Times New Roman", Times, serif'
-  ctx.fillText('MUKUNDDAS LOHIA COLLEGE OF ENGINEERING,', textCenterX, headerTop + 58)
-  ctx.fillText('PUNE', textCenterX, headerTop + 82)
+  ctx.font = 'bold 18.5px "Times New Roman", Times, serif'
+  ctx.fillText('MUKUNDDAS LOHIA COLLEGE OF ENGINEERING, PUNE', textCenterX, headerTop + 58)
 
-  ctx.font = '11.5px "Times New Roman", Times, serif'
+  ctx.font = '12px "Times New Roman", Times, serif'
   ctx.fillText(
-    '(Approved by AICTE, Recognized by Govt. of Maharashtra and Affiliated to Dr.',
+    '(Approved by AICTE, Recognized by Govt. of Maharashtra and',
     textCenterX,
-    headerTop + 107
+    headerTop + 84
   )
   ctx.fillText(
-    'Babasaheb Ambedkar Technological University (DBATU), Lonere)',
+    'Affiliated to Dr. Babasaheb Ambedkar Technological University',
     textCenterX,
-    headerTop + 125
+    headerTop + 102
+  )
+  ctx.fillText(
+    '(DBATU), Lonere)',
+    textCenterX,
+    headerTop + 120
   )
 
   // ─── SECTION 2: "Master Time Table" BAR ───────────────────────────
@@ -151,7 +155,7 @@ export async function renderTimetableToCanvas(
   ctx.strokeRect(leftMargin, barTop, contentWidth, barHeight)
 
   ctx.fillStyle = '#000000'
-  ctx.font = 'bold 16px "Times New Roman", Times, serif'
+  ctx.font = 'bold 16.5px "Times New Roman", Times, serif'
   ctx.textAlign = 'center'
   ctx.fillText('Master Time Table', leftMargin + contentWidth / 2, barTop + 19)
 
@@ -167,14 +171,15 @@ export async function renderTimetableToCanvas(
   ctx.fillText(`SEM: ${grid.semester || 'I'}`, rightMargin - 12, metaTop + 24)
 
   // Line 2: Class and Date (Date in bold RED!)
+  const displayClass = grid.className === 'FY BTECH' ? 'F.Y. B.TECH.' : (grid.className || 'F.Y. B.TECH.')
   ctx.textAlign = 'left'
-  ctx.font = 'bold 18px "Times New Roman", Times, serif'
-  ctx.fillText(`Class: ${grid.className || 'FY BTECH'}`, leftMargin + 12, metaTop + 50)
+  ctx.font = 'bold 17px "Times New Roman", Times, serif'
+  ctx.fillText(`Class: ${displayClass}`, leftMargin + 12, metaTop + 50)
 
   ctx.textAlign = 'right'
-  ctx.fillStyle = OFFICIAL_TIMETABLE_GEOMETRY.colors.dateRed // Official College Red
-  ctx.font = 'bold 18px "Times New Roman", Times, serif'
-  ctx.fillText(`Date: ${grid.date || '22/10/2026'}`, rightMargin - 12, metaTop + 50)
+  ctx.fillStyle = OFFICIAL_TIMETABLE_GEOMETRY.colors.dateRed // Official College Red (#BB1821)
+  ctx.font = 'bold 17px "Times New Roman", Times, serif'
+  ctx.fillText(`Date: ${grid.date || '02/11/2026'}`, rightMargin - 12, metaTop + 50)
   ctx.fillStyle = '#000000' // Reset to black
 
   // ─── SECTION 4: MAIN TIMETABLE GRID ───────────────────────────────
@@ -184,7 +189,7 @@ export async function renderTimetableToCanvas(
   ctx.strokeRect(leftMargin, gridTop, contentWidth, gridHeaderHeight)
 
   ctx.fillStyle = '#000000'
-  ctx.font = 'bold 13px Arial, sans-serif'
+  ctx.font = 'bold 13.5px "Times New Roman", Times, serif'
   ctx.textAlign = 'center'
   ctx.fillText('Time', leftMargin + colTimeWidth / 2, gridTop + 20)
   strokeLine(ctx, leftMargin + colTimeWidth, gridTop, leftMargin + colTimeWidth, gridTop + gridHeaderHeight)
@@ -214,24 +219,19 @@ export async function renderTimetableToCanvas(
   grid.periods.forEach(period => {
     const pY = periodTops.get(period.id)!
 
-    // Time cell
-    strokeLine(ctx, leftMargin, pY + periodRowHeight, rightMargin, pY + periodRowHeight)
-    strokeLine(ctx, leftMargin + colTimeWidth, pY, leftMargin + colTimeWidth, pY + periodRowHeight)
-
-    ctx.fillStyle = '#000000'
-    ctx.font = 'bold 13px Arial, sans-serif'
-    ctx.textAlign = 'center'
-    ctx.fillText(`${period.startTime} - ${period.endTime}`, leftMargin + colTimeWidth / 2, pY + 27)
-
     // Full Break Row (e.g. Short Break or Long Break)
     if (period.isBreak) {
       ctx.fillStyle = OFFICIAL_TIMETABLE_GEOMETRY.colors.breakRowBg
-      ctx.fillRect(leftMargin + colTimeWidth, pY, contentWidth - colTimeWidth, periodRowHeight)
-      strokeLine(ctx, leftMargin + colTimeWidth, pY, rightMargin, pY)
+      ctx.fillRect(leftMargin, pY, contentWidth, periodRowHeight)
+      strokeLine(ctx, leftMargin, pY + periodRowHeight, rightMargin, pY + periodRowHeight)
+      strokeLine(ctx, leftMargin + colTimeWidth, pY, leftMargin + colTimeWidth, pY + periodRowHeight)
 
       ctx.fillStyle = '#000000'
-      ctx.font = 'bold 14px "Times New Roman", Times, serif'
+      ctx.font = 'bold 13.5px "Times New Roman", Times, serif'
       ctx.textAlign = 'center'
+      ctx.fillText(`${period.startTime}-${period.endTime}`, leftMargin + colTimeWidth / 2, pY + 27)
+
+      ctx.font = 'bold 14.5px "Times New Roman", Times, serif'
       ctx.fillText(
         period.breakLabel || 'Break',
         leftMargin + colTimeWidth + (contentWidth - colTimeWidth) / 2,
@@ -239,6 +239,15 @@ export async function renderTimetableToCanvas(
       )
       return
     }
+
+    // Time cell
+    strokeLine(ctx, leftMargin, pY + periodRowHeight, rightMargin, pY + periodRowHeight)
+    strokeLine(ctx, leftMargin + colTimeWidth, pY, leftMargin + colTimeWidth, pY + periodRowHeight)
+
+    ctx.fillStyle = '#000000'
+    ctx.font = 'bold 13.5px "Times New Roman", Times, serif'
+    ctx.textAlign = 'center'
+    ctx.fillText(`${period.startTime} - ${period.endTime}`, leftMargin + colTimeWidth / 2, pY + 27)
 
     // Branch cells
     grid.branches.forEach((_branch, bIdx) => {
@@ -257,7 +266,7 @@ export async function renderTimetableToCanvas(
         }
       }
 
-      const formatted = formatCellContent(cell)
+      const formatted = formatCellContent(cell, period.id)
 
       // Fill cell background & border
       ctx.fillStyle = formatted.bgColor
@@ -268,21 +277,21 @@ export async function renderTimetableToCanvas(
       ctx.fillStyle = '#000000'
 
       if (formatted.isDash) {
-        ctx.font = 'bold 16px Arial, sans-serif'
+        ctx.font = 'bold 16px "Times New Roman", Times, serif'
         ctx.textAlign = 'center'
         ctx.fillText('-', cellX + branchColWidth / 2, pY + cellHeight / 2 + 5)
       } else if (formatted.isBatchSplit) {
-        // Multi-batch practical (numbered lines: 1. ... / 2. ...)
-        ctx.font = 'bold 11px Arial, sans-serif'
-        ctx.textAlign = 'left'
+        // Multi-batch practical (numbered lines: 1. ... / 2. ...) - centered!
+        ctx.font = 'bold 11.5px "Times New Roman", Times, serif'
+        ctx.textAlign = 'center'
         const lineSpacing = 16
-        const startY = pY + cellHeight / 2 - lineSpacing / 2 + 4
+        const startY = pY + cellHeight / 2 - lineSpacing / 2 + 3
         formatted.lines.forEach((line, lIdx) => {
-          ctx.fillText(line, cellX + 7, startY + lIdx * lineSpacing)
+          ctx.fillText(line, cellX + branchColWidth / 2, startY + lIdx * lineSpacing)
         })
       } else {
         // Theory lecture or single practical
-        ctx.font = 'bold 12px Arial, sans-serif'
+        ctx.font = 'bold 12.5px "Times New Roman", Times, serif'
         ctx.textAlign = 'center'
         const lineCount = formatted.lines.length
         if (lineCount === 1) {
@@ -310,32 +319,45 @@ export async function renderTimetableToCanvas(
   ctx.strokeRect(leftMargin, coordTop, contentWidth, coordHeaderHeight)
 
   ctx.fillStyle = '#000000'
-  ctx.font = 'bold 12px Arial, sans-serif'
+  ctx.font = 'bold 13px "Times New Roman", Times, serif'
   ctx.textAlign = 'center'
-  ctx.fillText('Branch', leftMargin + coordCol0Width / 2, coordTop + 16)
+  ctx.fillText('Branch', leftMargin + coordCol0Width / 2, coordTop + 17)
   strokeLine(ctx, leftMargin + coordCol0Width, coordTop, leftMargin + coordCol0Width, coordTop + coordHeaderHeight)
 
   grid.branches.forEach((b, idx) => {
     const colX = leftMargin + coordCol0Width + idx * coordBranchWidth
-    ctx.fillText(b, colX + coordBranchWidth / 2, coordTop + 16)
+    ctx.fillText(b, colX + coordBranchWidth / 2, coordTop + 17)
     strokeLine(ctx, colX + coordBranchWidth, coordTop, colX + coordBranchWidth, coordTop + coordHeaderHeight)
   })
 
   // Content row
   const coordContentY = coordTop + coordHeaderHeight
-  ctx.fillStyle = OFFICIAL_TIMETABLE_GEOMETRY.colors.coordinatorContentBg
-  ctx.fillRect(leftMargin, coordContentY, contentWidth, coordRowHeight)
-  ctx.strokeRect(leftMargin, coordContentY, contentWidth, coordRowHeight)
-  strokeLine(ctx, leftMargin + coordCol0Width, coordContentY, leftMargin + coordCol0Width, coordContentY + coordRowHeight)
+  ctx.fillStyle = OFFICIAL_TIMETABLE_GEOMETRY.colors.coordinatorLabelBg
+  ctx.fillRect(leftMargin, coordContentY, coordCol0Width, coordRowHeight)
+  ctx.strokeRect(leftMargin, coordContentY, coordCol0Width, coordRowHeight)
 
   ctx.fillStyle = '#000000'
-  ctx.font = 'bold 11.5px Arial, sans-serif'
-  ctx.fillText('FE Class Coordinators', leftMargin + coordCol0Width / 2, coordContentY + 18)
+  ctx.font = 'bold 12px "Times New Roman", Times, serif'
+  ctx.textAlign = 'center'
+  ctx.fillText('FE Class Coordinators', leftMargin + coordCol0Width / 2, coordContentY + coordRowHeight / 2 + 4)
 
   grid.coordinators.forEach((coord, idx) => {
     const colX = leftMargin + coordCol0Width + idx * coordBranchWidth
-    strokeLine(ctx, colX + coordBranchWidth, coordContentY, colX + coordBranchWidth, coordContentY + coordRowHeight)
-    ctx.fillText(coord.name, colX + coordBranchWidth / 2, coordContentY + 18)
+    ctx.fillStyle = OFFICIAL_TIMETABLE_GEOMETRY.colors.coordinatorContentBg
+    ctx.fillRect(colX, coordContentY, coordBranchWidth, coordRowHeight)
+    ctx.strokeRect(colX, coordContentY, coordBranchWidth, coordRowHeight)
+
+    ctx.fillStyle = '#000000'
+    ctx.font = 'bold 12px "Times New Roman", Times, serif'
+    ctx.textAlign = 'center'
+
+    const parts = coord.name.split(' ')
+    if (parts.length >= 3) {
+      ctx.fillText(`${parts[0]} ${parts[1]}`, colX + coordBranchWidth / 2, coordContentY + coordRowHeight / 2 - 4)
+      ctx.fillText(parts.slice(2).join(' '), colX + coordBranchWidth / 2, coordContentY + coordRowHeight / 2 + 12)
+    } else {
+      ctx.fillText(coord.name, colX + coordBranchWidth / 2, coordContentY + coordRowHeight / 2 + 4)
+    }
   })
 
   // ─── SECTION 6: PRACTICAL SESSION NOTE BOX ────────────────────────
@@ -346,9 +368,9 @@ export async function renderTimetableToCanvas(
   ctx.fillRect(leftMargin, noteTop, noteLabelWidth, noteHeight)
   ctx.strokeRect(leftMargin, noteTop, noteLabelWidth, noteHeight)
   ctx.fillStyle = '#000000'
-  ctx.font = 'bold 16px "Times New Roman", Times, serif'
+  ctx.font = 'bold 15px "Times New Roman", Times, serif'
   ctx.textAlign = 'left'
-  ctx.fillText('Note: For Practical Session:', leftMargin + 12, noteTop + 32)
+  ctx.fillText('Note: For Practical Session:', leftMargin + 14, noteTop + 31)
 
   // Right Note Table (Batches 1 & 2)
   const batchTableX = leftMargin + noteLabelWidth
@@ -357,46 +379,48 @@ export async function renderTimetableToCanvas(
   const halfHeight = noteHeight / 2
 
   // Batch 1 row
-  ctx.fillStyle = OFFICIAL_TIMETABLE_GEOMETRY.colors.noteRightBatchBg
-  ctx.fillRect(batchTableX, noteTop, batchTableWidth, halfHeight)
-  ctx.strokeRect(batchTableX, noteTop, batchTableWidth, halfHeight)
-  strokeLine(ctx, batchTableX + batchCol1Width, noteTop, batchTableX + batchCol1Width, noteTop + halfHeight)
+  ctx.fillStyle = OFFICIAL_TIMETABLE_GEOMETRY.colors.noteBatchLabelBg
+  ctx.fillRect(batchTableX, noteTop, batchCol1Width, halfHeight)
+  ctx.strokeRect(batchTableX, noteTop, batchCol1Width, halfHeight)
 
   ctx.fillStyle = '#000000'
-  ctx.font = 'bold 12px Arial, sans-serif'
+  ctx.font = 'bold 13px "Times New Roman", Times, serif'
   ctx.textAlign = 'center'
   ctx.fillText('Batch 1:', batchTableX + batchCol1Width / 2, noteTop + 17)
 
+  ctx.fillStyle = OFFICIAL_TIMETABLE_GEOMETRY.colors.noteRightBatchBg
+  ctx.fillRect(batchTableX + batchCol1Width, noteTop, batchTableWidth - batchCol1Width, halfHeight)
+  ctx.strokeRect(batchTableX + batchCol1Width, noteTop, batchTableWidth - batchCol1Width, halfHeight)
+
+  ctx.fillStyle = '#000000'
   ctx.textAlign = 'left'
-  ctx.font = '12px Arial, sans-serif'
+  ctx.font = 'bold 13px "Times New Roman", Times, serif'
   ctx.fillText(
     grid.practicalNotes?.batch1Roll || 'Roll No. 1 to 33.',
-    batchTableX + batchCol1Width + 10,
+    batchTableX + batchCol1Width + 12,
     noteTop + 17
   )
 
   // Batch 2 row
-  ctx.fillStyle = OFFICIAL_TIMETABLE_GEOMETRY.colors.noteRightBatchBg
-  ctx.fillRect(batchTableX, noteTop + halfHeight, batchTableWidth, halfHeight)
-  ctx.strokeRect(batchTableX, noteTop + halfHeight, batchTableWidth, halfHeight)
-  strokeLine(
-    ctx,
-    batchTableX + batchCol1Width,
-    noteTop + halfHeight,
-    batchTableX + batchCol1Width,
-    noteTop + noteHeight
-  )
+  ctx.fillStyle = OFFICIAL_TIMETABLE_GEOMETRY.colors.noteBatchLabelBg
+  ctx.fillRect(batchTableX, noteTop + halfHeight, batchCol1Width, halfHeight)
+  ctx.strokeRect(batchTableX, noteTop + halfHeight, batchCol1Width, halfHeight)
 
   ctx.fillStyle = '#000000'
-  ctx.font = 'bold 12px Arial, sans-serif'
+  ctx.font = 'bold 13px "Times New Roman", Times, serif'
   ctx.textAlign = 'center'
   ctx.fillText('Batch 2:', batchTableX + batchCol1Width / 2, noteTop + halfHeight + 17)
 
+  ctx.fillStyle = OFFICIAL_TIMETABLE_GEOMETRY.colors.noteRightBatchBg
+  ctx.fillRect(batchTableX + batchCol1Width, noteTop + halfHeight, batchTableWidth - batchCol1Width, halfHeight)
+  ctx.strokeRect(batchTableX + batchCol1Width, noteTop + halfHeight, batchTableWidth - batchCol1Width, halfHeight)
+
+  ctx.fillStyle = '#000000'
   ctx.textAlign = 'left'
-  ctx.font = '12px Arial, sans-serif'
+  ctx.font = 'bold 13px "Times New Roman", Times, serif'
   ctx.fillText(
     grid.practicalNotes?.batch2Roll || 'Roll no. 34 & Onwords.',
-    batchTableX + batchCol1Width + 10,
+    batchTableX + batchCol1Width + 12,
     noteTop + halfHeight + 17
   )
 }

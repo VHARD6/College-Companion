@@ -15,7 +15,10 @@ export default function OfficialTimetableDocument({
   const coveredCells = new Set<string>()
 
   return (
-    <div className="bg-white p-3 md:p-6 text-black font-sans max-w-[1100px] mx-auto border-2 border-black shadow-lg overflow-x-auto select-none">
+    <div
+      className="bg-white p-3 md:p-6 text-black max-w-[1100px] mx-auto border-2 border-black shadow-lg overflow-x-auto select-none"
+      style={{ fontFamily: '"Times New Roman", Times, "Liberation Serif", serif' }}
+    >
       {/* ─── 1. INSTITUTIONAL HEADER BOX ───────────────────────── */}
       <div className="border border-black flex items-stretch">
         {/* Left: Logo (exact width matching Time column: 19.333%) */}
@@ -35,40 +38,43 @@ export default function OfficialTimetableDocument({
 
         {/* Right: Institutional Text */}
         <div className="flex-1 p-2 md:p-3 text-center flex flex-col justify-center bg-white">
-          <h2 className="text-xs md:text-sm font-bold font-serif tracking-wide uppercase text-gray-900 leading-snug">
+          <div className="text-xs sm:text-sm md:text-base font-bold tracking-wide uppercase text-black leading-snug">
             MAHARASHTRA EDUCATION SOCIETY'S
-          </h2>
-          <h1 className="text-sm md:text-lg font-bold font-serif uppercase text-gray-950 mt-0.5 leading-tight">
-            MUKUNDDAS LOHIA COLLEGE OF ENGINEERING,
-          </h1>
-          <h1 className="text-sm md:text-lg font-bold font-serif uppercase text-gray-950 mt-0.5 leading-tight">
-            PUNE
-          </h1>
-          <p className="text-[10px] md:text-xs font-serif text-gray-800 mt-1 leading-snug">
-            (Approved by AICTE, Recognized by Govt. of Maharashtra and Affiliated to Dr. Babasaheb Ambedkar Technological University (DBATU), Lonere)
-          </p>
+          </div>
+          <div className="text-sm sm:text-base md:text-lg lg:text-xl font-bold uppercase text-black mt-0.5 leading-tight">
+            MUKUNDDAS LOHIA COLLEGE OF ENGINEERING, PUNE
+          </div>
+          <div className="text-[10px] sm:text-xs md:text-sm text-black mt-1 leading-snug">
+            (Approved by AICTE, Recognized by Govt. of Maharashtra and
+          </div>
+          <div className="text-[10px] sm:text-xs md:text-sm text-black leading-snug">
+            Affiliated to Dr. Babasaheb Ambedkar Technological University
+          </div>
+          <div className="text-[10px] sm:text-xs md:text-sm text-black leading-snug">
+            (DBATU), Lonere)
+          </div>
         </div>
       </div>
 
       {/* ─── 2. "Master Time Table" BAR ─────────────────────────── */}
-      <div className="bg-[#D9D9D9] border-x border-b border-black py-1.5 text-center font-serif font-bold text-sm md:text-base tracking-wide text-black">
+      <div className="bg-[#CCCCCC] border-x border-b border-black py-1.5 text-center font-bold text-sm sm:text-base md:text-lg tracking-wide text-black">
         Master Time Table
       </div>
 
       {/* ─── 3. METADATA LINES ──────────────────────────────────── */}
-      <div className="border-x border-b border-black px-3 py-1.5 space-y-1 bg-white font-serif font-bold">
-        <div className="flex justify-between items-center text-xs md:text-base">
+      <div className="border-x border-b border-black px-3 py-1.5 space-y-1 bg-white font-bold text-xs sm:text-sm md:text-base">
+        <div className="flex justify-between items-center">
           <span>A. Y.: {grid.academicYear || '2026-27'}</span>
           <span>SEM: {grid.semester || 'I'}</span>
         </div>
-        <div className="flex justify-between items-center text-sm md:text-lg">
-          <span>Class: {grid.className || 'FY BTECH'}</span>
-          <span className="text-[#D00000]">Date: {grid.date || '22/10/2026'}</span>
+        <div className="flex justify-between items-center">
+          <span>Class: {grid.className === 'FY BTECH' ? 'F.Y. B.TECH.' : (grid.className || 'F.Y. B.TECH.')}</span>
+          <span className="text-[#BB1821]">Date: {grid.date || '02/11/2026'}</span>
         </div>
       </div>
 
       {/* ─── 4. MAIN TIMETABLE GRID ─────────────────────────────── */}
-      <table className="w-full table-fixed border-collapse border-x border-b border-black text-xs md:text-sm">
+      <table className="w-full table-fixed border-collapse border-x border-b border-black text-xs sm:text-sm md:text-base">
         <colgroup>
           <col style={{ width: OFFICIAL_TIMETABLE_GEOMETRY.timeColPercent }} />
           {grid.branches.map((_, idx) => (
@@ -77,7 +83,7 @@ export default function OfficialTimetableDocument({
         </colgroup>
 
         <thead>
-          <tr className="bg-[#C7DDB5] border-b border-black font-bold text-center">
+          <tr className="bg-[#B6D7A8] border-b border-black font-bold text-center">
             <th className="border border-black py-2 px-1 text-center font-bold">Time</th>
             {grid.branches.map((branch, idx) => (
               <th key={idx} className="border border-black py-2 px-1 text-center font-bold">
@@ -92,13 +98,13 @@ export default function OfficialTimetableDocument({
             // Full width break row (e.g. Short Break or Long Break)
             if (period.isBreak) {
               return (
-                <tr key={period.id} className="border-b border-black">
-                  <td className="border border-black py-2 px-1 text-center font-bold bg-white whitespace-nowrap">
-                    {period.startTime} - {period.endTime}
+                <tr key={period.id} className="border-b border-black bg-[#DAD2E9]">
+                  <td className="border border-black py-2 px-1 text-center font-bold whitespace-nowrap">
+                    {period.startTime}-{period.endTime}
                   </td>
                   <td
                     colSpan={grid.branches.length}
-                    className="border border-black py-2 px-2 text-center font-serif font-bold bg-[#DCD6EB] text-black tracking-wide"
+                    className="border border-black py-2 px-2 text-center font-bold text-black tracking-wide"
                   >
                     {period.breakLabel || 'Break'}
                   </td>
@@ -125,7 +131,7 @@ export default function OfficialTimetableDocument({
                     }
                   }
 
-                  const formatted = formatCellContent(cell)
+                  const formatted = formatCellContent(cell, period.id)
 
                   return (
                     <td
@@ -147,7 +153,7 @@ export default function OfficialTimetableDocument({
                       {formatted.isDash ? (
                         <span className="font-bold text-gray-900 text-sm md:text-base">-</span>
                       ) : formatted.isBatchSplit ? (
-                        <div className="text-left font-bold text-[10px] md:text-xs leading-snug px-0.5">
+                        <div className="text-center font-bold text-[10px] sm:text-xs md:text-sm leading-tight px-0.5">
                           {formatted.lines.map((line, lIdx) => (
                             <div key={lIdx} className="truncate">
                               {line}
@@ -155,7 +161,7 @@ export default function OfficialTimetableDocument({
                           ))}
                         </div>
                       ) : (
-                        <div className="font-bold text-xs md:text-sm leading-snug text-center px-0.5">
+                        <div className="font-bold text-xs sm:text-sm md:text-base leading-snug text-center px-0.5">
                           {formatted.lines.map((line, lIdx) => (
                             <div key={lIdx} className="truncate">
                               {line}
@@ -173,8 +179,8 @@ export default function OfficialTimetableDocument({
       </table>
 
       {/* ─── 5. CLASS COORDINATORS TABLE ────────────────────────── */}
-      <div className="mt-4 border-2 border-black">
-        <table className="w-full table-fixed border-collapse text-xs md:text-sm">
+      <div className="mt-4 md:mt-5 border-2 border-black">
+        <table className="w-full table-fixed border-collapse text-xs sm:text-sm md:text-base">
           <colgroup>
             <col style={{ width: OFFICIAL_TIMETABLE_GEOMETRY.timeColPercent }} />
             {grid.branches.map((_, idx) => (
@@ -182,7 +188,7 @@ export default function OfficialTimetableDocument({
             ))}
           </colgroup>
           <thead>
-            <tr className="bg-[#DCD6EB] border-b border-black font-bold text-center">
+            <tr className="bg-[#DAD2E9] border-b border-black font-bold text-center">
               <th className="border-r border-black p-1.5 text-center font-bold">Branch</th>
               {grid.branches.map((b, idx) => (
                 <th key={idx} className="border-r border-black p-1.5 last:border-r-0 text-center font-bold">
@@ -193,49 +199,62 @@ export default function OfficialTimetableDocument({
           </thead>
           <tbody>
             <tr className="text-center font-bold">
-              <td className="border-r border-black p-1.5 bg-white text-center font-bold">
+              <td className="border-r border-black p-1.5 bg-[#DAD2E9] text-center font-bold">
                 FE Class Coordinators
               </td>
-              {grid.coordinators.map((coord, idx) => (
-                <td
-                  key={idx}
-                  className="border-r border-black p-1.5 last:border-r-0 bg-white text-center font-bold truncate px-1"
-                >
-                  {coord.name}
-                </td>
-              ))}
+              {grid.coordinators.map((coord, idx) => {
+                const parts = coord.name.split(' ')
+                const line1 = parts.length >= 3 ? `${parts[0]} ${parts[1]}` : coord.name
+                const line2 = parts.length >= 3 ? parts.slice(2).join(' ') : ''
+
+                return (
+                  <td
+                    key={idx}
+                    className="border-r border-black p-1.5 last:border-r-0 bg-white text-center font-bold px-1 text-xs sm:text-sm md:text-base leading-snug align-middle"
+                  >
+                    {line2 ? (
+                      <div>
+                        <div>{line1}</div>
+                        <div>{line2}</div>
+                      </div>
+                    ) : (
+                      <div>{coord.name}</div>
+                    )}
+                  </td>
+                )
+              })}
             </tr>
           </tbody>
         </table>
       </div>
 
       {/* ─── 6. PRACTICAL SESSION NOTE BOX ──────────────────────── */}
-      <div className="mt-3 border-2 border-black flex flex-row items-stretch">
+      <div className="mt-3 md:mt-4 border-2 border-black flex flex-row items-stretch">
         {/* Left note label (proportional width matching reference: 47.33%) */}
         <div
           style={{ width: `${OFFICIAL_TIMETABLE_GEOMETRY.noteLeftRatio * 100}%` }}
-          className="p-2 md:p-3 border-r border-black flex items-center bg-white font-serif font-bold text-xs md:text-base shrink-0"
+          className="p-2 md:p-3 border-r border-black flex items-center bg-[#CFE2F3] font-bold text-xs sm:text-sm md:text-base shrink-0"
         >
           Note: For Practical Session:
         </div>
 
         {/* Right sub-table */}
-        <div className="flex-1 bg-[#CFE2F3]">
-          <table className="w-full table-fixed border-collapse text-xs md:text-sm">
+        <div className="flex-1 bg-white">
+          <table className="w-full table-fixed border-collapse text-xs sm:text-sm md:text-base">
             <colgroup>
               <col style={{ width: `${OFFICIAL_TIMETABLE_GEOMETRY.noteBatchLabelRatio * 100}%` }} />
               <col style={{ width: `${(1 - OFFICIAL_TIMETABLE_GEOMETRY.noteBatchLabelRatio) * 100}%` }} />
             </colgroup>
             <tbody>
               <tr className="border-b border-black">
-                <td className="border-r border-black p-1.5 font-bold text-center">Batch 1:</td>
-                <td className="p-1.5 pl-3 font-medium">
+                <td className="border-r border-black p-1.5 font-bold text-center bg-white">Batch 1:</td>
+                <td className="p-1.5 pl-3 font-bold bg-white">
                   {grid.practicalNotes?.batch1Roll || 'Roll No. 1 to 33.'}
                 </td>
               </tr>
               <tr>
-                <td className="border-r border-black p-1.5 font-bold text-center">Batch 2:</td>
-                <td className="p-1.5 pl-3 font-medium">
+                <td className="border-r border-black p-1.5 font-bold text-center bg-white">Batch 2:</td>
+                <td className="p-1.5 pl-3 font-bold bg-white">
                   {grid.practicalNotes?.batch2Roll || 'Roll no. 34 & Onwords.'}
                 </td>
               </tr>

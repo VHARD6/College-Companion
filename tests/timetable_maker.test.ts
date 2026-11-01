@@ -493,5 +493,44 @@ describe('Timetable Maker & Image Persistence Suite', () => {
       assert.strictEqual(template.cells['8_2'].type, 'empty')
       assert.strictEqual(template.cells['8_3'].type, 'empty')
     })
+
+    it('enforces exact institutional reference color palette sampled from college timetable images', async () => {
+      const { OFFICIAL_TIMETABLE_GEOMETRY } = await import('../src/lib/timetableCellFormatter.ts')
+      const { colors } = OFFICIAL_TIMETABLE_GEOMETRY
+
+      // Colors verified from reference images:
+      assert.strictEqual(colors.gridHeaderBg, '#B6D7A8') // Light Sage Green
+      assert.strictEqual(colors.breakRowBg, '#DAD2E9')   // Soft Lavender
+      assert.strictEqual(colors.masterTimeTableBarBg, '#CCCCCC') // Neutral grey
+      assert.strictEqual(colors.coordinatorHeaderBg, '#DAD2E9') // Soft Lavender
+      assert.strictEqual(colors.coordinatorLabelBg, '#DAD2E9')  // Soft Lavender
+      assert.strictEqual(colors.coordinatorContentBg, '#FFFFFF') // Pure White
+      assert.strictEqual(colors.noteLeftBg, '#CFE2F3')   // Soft Ice Blue
+      assert.strictEqual(colors.practicalBg, '#FFFFFF')  // Pure White (no peach/pink tint)
+      assert.strictEqual(colors.dateRed, '#BB1821')      // Bold College Red
+    })
+
+    it('styles afternoon dashes with soft lavender and morning cells with white', async () => {
+      const { formatCellContent } = await import('../src/lib/timetableCellFormatter.ts')
+
+      // Afternoon free period (period 7: 01:00-02:00 or period 8: 02:00-03:00)
+      const afternoonDash = formatCellContent({ type: 'empty', text: '-' }, 7)
+      assert.strictEqual(afternoonDash.isDash, true)
+      assert.strictEqual(afternoonDash.bgColor, '#DAD2E9')
+
+      // Morning free period (period 1 or period 5)
+      const morningDash = formatCellContent({ type: 'empty', text: '-' }, 1)
+      assert.strictEqual(morningDash.isDash, true)
+      assert.strictEqual(morningDash.bgColor, '#FFFFFF')
+
+      // Practicals render on clean white
+      const practical = formatCellContent({
+        type: 'practical',
+        subject: 'CS',
+        professorAbbr: 'PP',
+        room: '702',
+      }, 1)
+      assert.strictEqual(practical.bgColor, '#FFFFFF')
+    })
   })
 })

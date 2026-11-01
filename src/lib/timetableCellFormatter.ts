@@ -14,21 +14,24 @@ export const OFFICIAL_TIMETABLE_GEOMETRY = {
   timeColPercent: '19.333%',
   branchColPercent: '20.167%',
 
-  // Official colors sampled from the reference images:
+  // Official colors sampled directly from the reference images:
   colors: {
     border: '#000000',
     headerBg: '#FFFFFF',
-    masterTimeTableBarBg: '#D9D9D9',
-    gridHeaderBg: '#C7DDB5', // Soft Sage Green
-    breakRowBg: '#DCD6EB',   // Soft Lavender
-    practicalBg: '#FAD2D2',  // Soft Peach/Pink for Practicals
-    freeCellBg: '#FFFFFF',   // White
-    theoryBg: '#FFFFFF',     // Pure White
-    dateRed: '#D00000',      // Official Bold College Red
-    coordinatorHeaderBg: '#DCD6EB',
-    coordinatorContentBg: '#FFFFFF',
-    noteLeftBg: '#FFFFFF',
-    noteRightBatchBg: '#CFE2F3', // Soft light blue
+    masterTimeTableBarBg: '#CCCCCC', // Light neutral grey
+    gridHeaderBg: '#B6D7A8',         // Light Sage Green from reference
+    breakRowBg: '#DAD2E9',           // Soft Lavender from reference
+    practicalBg: '#FFFFFF',          // Clean White in reference images (no pink)
+    freeCellBg: '#FFFFFF',           // Clean White
+    afternoonOffBg: '#DAD2E9',       // Soft Lavender for empty afternoon periods 7 & 8
+    theoryBg: '#FFFFFF',             // Pure White
+    dateRed: '#BB1821',              // Official Bold College Red
+    coordinatorHeaderBg: '#DAD2E9',  // Soft Lavender
+    coordinatorLabelBg: '#DAD2E9',   // Soft Lavender for FE Class Coordinators cell
+    coordinatorContentBg: '#FFFFFF', // Pure White for professor cells
+    noteLeftBg: '#CFE2F3',           // Soft ice blue for Note: For Practical Session
+    noteBatchLabelBg: '#FFFFFF',     // Clean White
+    noteRightBatchBg: '#FFFFFF',     // Clean White
   },
 
   // Proportions for Coordinator table:
@@ -36,7 +39,7 @@ export const OFFICIAL_TIMETABLE_GEOMETRY = {
   coordBranchRatio: 181.5 / 900, // Aligns with branch columns
 
   // Proportions for Practical Notes footer:
-  noteLeftRatio: 426 / 900, // 47.33%
+  noteLeftRatio: 426 / 900, // 47.33% (aligns near ENTC/COMP boundary)
   noteBatchLabelRatio: 146 / 474, // 30.8% of the right batch sub-table
 }
 
@@ -52,13 +55,17 @@ export interface FormattedCellContent {
  * strictly matching official college reference rules and preventing
  * empty brackets or invalid placeholders.
  */
-export function formatCellContent(cell?: TimetableCellData): FormattedCellContent {
+export function formatCellContent(cell?: TimetableCellData, periodId?: number): FormattedCellContent {
+  const isAfternoonPeriod = periodId !== undefined && periodId >= 7
+
   if (!cell || cell.type === 'empty') {
     return {
       lines: ['-'],
       isBatchSplit: false,
       isDash: true,
-      bgColor: OFFICIAL_TIMETABLE_GEOMETRY.colors.freeCellBg,
+      bgColor: isAfternoonPeriod
+        ? OFFICIAL_TIMETABLE_GEOMETRY.colors.afternoonOffBg
+        : OFFICIAL_TIMETABLE_GEOMETRY.colors.freeCellBg,
     }
   }
 
@@ -73,7 +80,9 @@ export function formatCellContent(cell?: TimetableCellData): FormattedCellConten
         lines: ['-'],
         isBatchSplit: false,
         isDash: true,
-        bgColor: OFFICIAL_TIMETABLE_GEOMETRY.colors.freeCellBg,
+        bgColor: isAfternoonPeriod
+          ? OFFICIAL_TIMETABLE_GEOMETRY.colors.afternoonOffBg
+          : OFFICIAL_TIMETABLE_GEOMETRY.colors.freeCellBg,
       }
     }
 
@@ -93,7 +102,7 @@ export function formatCellContent(cell?: TimetableCellData): FormattedCellConten
       lines: [line1, line2],
       isBatchSplit: true,
       isDash: false,
-      bgColor: '#FFFFFF', // In reference 3, batch-splits are white with bold lines
+      bgColor: OFFICIAL_TIMETABLE_GEOMETRY.colors.practicalBg,
     }
   }
 
@@ -123,7 +132,9 @@ export function formatCellContent(cell?: TimetableCellData): FormattedCellConten
         lines: ['-'],
         isBatchSplit: false,
         isDash: true,
-        bgColor: OFFICIAL_TIMETABLE_GEOMETRY.colors.freeCellBg,
+        bgColor: isAfternoonPeriod
+          ? OFFICIAL_TIMETABLE_GEOMETRY.colors.afternoonOffBg
+          : OFFICIAL_TIMETABLE_GEOMETRY.colors.freeCellBg,
       }
     }
 
@@ -144,7 +155,7 @@ export function formatCellContent(cell?: TimetableCellData): FormattedCellConten
       lines,
       isBatchSplit: false,
       isDash: false,
-      bgColor: isWorkshop ? '#FFFFFF' : OFFICIAL_TIMETABLE_GEOMETRY.colors.practicalBg,
+      bgColor: OFFICIAL_TIMETABLE_GEOMETRY.colors.practicalBg,
     }
   }
 
@@ -155,7 +166,9 @@ export function formatCellContent(cell?: TimetableCellData): FormattedCellConten
       lines: ['-'],
       isBatchSplit: false,
       isDash: true,
-      bgColor: OFFICIAL_TIMETABLE_GEOMETRY.colors.theoryBg,
+      bgColor: isAfternoonPeriod
+        ? OFFICIAL_TIMETABLE_GEOMETRY.colors.afternoonOffBg
+        : OFFICIAL_TIMETABLE_GEOMETRY.colors.theoryBg,
     }
   }
 
