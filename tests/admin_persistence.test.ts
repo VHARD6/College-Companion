@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
 import {
   extractSingleRelation,
   deriveStudentBranch,
@@ -211,6 +213,26 @@ describe('Admin Persistence & Academic Assignment Test Suite', () => {
 
       const savedRow = simulateUpsertResponse([{ id: 1, roll_no: 'CS101' }])
       assert.equal(savedRow.roll_no, 'CS101')
+    })
+  })
+
+  describe('Component Decomposition Architecture (Finding 18.1)', () => {
+    it('verifies CsvImportCard and UserEnrollmentModal are extracted into dedicated modules', () => {
+      const root = process.cwd()
+
+      const csvCardPath = path.join(root, 'src', 'components', 'admin', 'CsvImportCard.tsx')
+      const enrollmentModalPath = path.join(root, 'src', 'components', 'admin', 'UserEnrollmentModal.tsx')
+      const adminUsersPath = path.join(root, 'src', 'pages', 'admin', 'AdminUsersPage.tsx')
+
+      assert.ok(fs.existsSync(csvCardPath), 'CsvImportCard.tsx must exist')
+      assert.ok(fs.existsSync(enrollmentModalPath), 'UserEnrollmentModal.tsx must exist')
+
+      const adminUsersContent = fs.readFileSync(adminUsersPath, 'utf8')
+      assert.match(adminUsersContent, /import CsvImportCard from/i, 'AdminUsersPage must import CsvImportCard')
+      assert.match(adminUsersContent, /import UserEnrollmentModal from/i, 'AdminUsersPage must import UserEnrollmentModal')
+
+      const lineCount = adminUsersContent.split('\n').length
+      assert.ok(lineCount < 700, `AdminUsersPage should be under 700 lines (actual: ${lineCount})`)
     })
   })
 })

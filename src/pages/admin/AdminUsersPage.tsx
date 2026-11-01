@@ -9,13 +9,15 @@ import Select from '../../components/ui/Select'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import toast from 'react-hot-toast'
-import { UserPlus, FileSpreadsheet, Search, Edit3, X, AlertCircle, RefreshCw } from 'lucide-react'
-import { normalizeEmail, validateEmail, validatePassword } from '../../lib/authUtils'
+import { UserPlus, FileSpreadsheet, Search, Edit3, AlertCircle, RefreshCw } from 'lucide-react'
+import { normalizeEmail, validateEmail } from '../../lib/authUtils'
 import type { Role } from '../../types'
 
-import { extractSingleRelation, parseCsvInput, evaluateCsvImportOutcome } from '../../lib/adminUtils'
+import { extractSingleRelation } from '../../lib/adminUtils'
 import PaginationControls from '../../components/ui/PaginationControls'
 import { calcPageRange, calcTotalPages } from '../../lib/pagination'
+import CsvImportCard from '../../components/admin/CsvImportCard'
+import UserEnrollmentModal from '../../components/admin/UserEnrollmentModal'
 
 interface NewUserForm {
   name: string
@@ -51,14 +53,6 @@ export default function AdminUsersPage() {
 
   // Enrollment / Assignment modal state
   const [editingUser, setEditingUser] = useState<any | null>(null)
-  const [editRollNo, setEditRollNo] = useState('')
-  const [editClassId, setEditClassId] = useState('')
-  const [editBatchId, setEditBatchId] = useState('')
-  const [editDepartmentId, setEditDepartmentId] = useState('')
-  const [editStudentDeptId, setEditStudentDeptId] = useState('')
-
-  const [csvText, setCsvText] = useState('')
-  const [isImporting, setIsImporting] = useState(false)
 
   // Fetch user profiles with attached student & professor records using server-side range pagination
   const {
@@ -165,17 +159,6 @@ export default function AdminUsersPage() {
     },
   })
 
-  // Batches for edit modal
-  const { data: editBatches } = useQuery({
-    queryKey: ['batches-list', editClassId],
-    enabled: !!editClassId,
-    queryFn: async () => {
-      const { data, error } = await supabase.from('batches').select('*').eq('class_id', Number(editClassId))
-      if (error) throw error
-      return data ?? []
-    },
-  })
-
   // Create Single User Mutation (Strictly through secure Edge Function)
   const createUserMutation = useMutation({
     mutationFn: async () => {
@@ -242,138 +225,9 @@ export default function AdminUsersPage() {
     },
   })
 
-  // Save Enrollment / Department assignment mutation with read-after-write verification
-  const saveAssignmentMutation = useMutation({
-    mutationFn: async () => {
-      if (!editingUser) return
-
-      if (editingUser.role === 'student') {
-        const trimmedRollNo = editRollNo.trim()
-        if (!trimmedRollNo) {
-          throw new Error('Roll number is required for student enrollment.')
-        }
-
-        const classIdNum = editClassId ? Number(editClassId) : null
-        const batchIdNum = editBatchId ? Number(editBatchId) : null
-
-        if (classIdNum !== null && isNaN(classIdNum)) {
-          throw new Error('Invalid class division selected.')
-        }
-        if (batchIdNum !== null && isNaN(batchIdNum)) {
-          throw new Error('Invalid practical batch selected.')
-        }
-
-        // Validate batch compatibility if a batch is specified
-        if (batchIdNum !== null && classIdNum !== null && editBatches && editBatches.length > 0) {
-          const validBatch = editBatches.some(b => b.id === batchIdNum && b.class_id === classIdNum)
-          if (!validBatch) {
-            throw new Error('Selected practical batch does not belong to the selected class division.')
-          }
-        }
-
-        // Check roll number uniqueness before upsert
-        const { data: existingStudentWithRoll, error: rollCheckErr } = await supabase
-          .from('students')
-          .select('id, user_id, roll_no')
-          .eq('roll_no', trimmedRollNo)
-          .maybeSingle()
-
-        if (rollCheckErr) throw rollCheckErr
-        if (existingStudentWithRoll && existingStudentWithRoll.user_id !== editingUser.id) {
-          throw new Error(`Roll number "${trimmedRollNo}" is already assigned to another student.`)
-        }
-
-        // Upsert student with confirmed read-after-write
-        const { data: savedStudent, error: studentError } = await supabase
-          .from('students')
-          .upsert({
-            user_id: editingUser.id,
-            roll_no: trimmedRollNo,
-            class_id: classIdNum,
-            batch_id: batchIdNum,
-          }, { onConflict: 'user_id' })
-          .select(`
-            id,
-            user_id,
-            roll_no,
-            class_id,
-            batch_id,
-            classes(id, name, semester, department_id, departments(id, name)),
-            batches(id, name)
-          `)
-
-        if (studentError) throw studentError
-        if (!savedStudent || savedStudent.length === 0) {
-          throw new Error('Failed to persist student enrollment. Zero rows were updated in the database.')
-        }
-
-        return { role: 'student', data: savedStudent[0] }
-      } else if (editingUser.role === 'professor') {
-        if (!editDepartmentId) {
-          throw new Error('Please select a department for this professor.')
-        }
-
-        const deptIdNum = Number(editDepartmentId)
-        if (isNaN(deptIdNum)) {
-          throw new Error('Invalid department selected.')
-        }
-
-        // Upsert professor with confirmed read-after-write
-        const { data: savedProf, error: profError } = await supabase
-          .from('professors')
-          .upsert({
-            user_id: editingUser.id,
-            department_id: deptIdNum,
-          }, { onConflict: 'user_id' })
-          .select('id, user_id, department_id, departments(id, name)')
-
-        if (profError) throw profError
-        if (!savedProf || savedProf.length === 0) {
-          throw new Error('Failed to persist professor department assignment. Zero rows were updated in the database.')
-        }
-
-        return { role: 'professor', data: savedProf[0] }
-      }
-    },
-    onSuccess: (result) => {
-      toast.success(
-        result?.role === 'student'
-          ? 'Student enrollment updated and verified!'
-          : 'Professor department assigned and verified!'
-      )
-      setEditingUser(null)
-      queryClient.invalidateQueries({ queryKey: ['admin-users'] })
-      queryClient.invalidateQueries({ queryKey: ['professors-list'] })
-      queryClient.invalidateQueries({ queryKey: ['admin-stats'] })
-      queryClient.invalidateQueries({ queryKey: ['professor-assignments'] })
-      queryClient.invalidateQueries({ queryKey: ['professor-all-assignments'] })
-    },
-    onError: (err: any) => {
-      toast.error(err.message ?? 'Failed to update assignment')
-    },
-  })
-
-  // Open modal with pre-populated values using extractSingleRelation
+  // Open enrollment / assignment modal
   const handleOpenEdit = (user: any) => {
     setEditingUser(user)
-    if (user.role === 'student') {
-      const studentRec = extractSingleRelation(user.students)
-      setEditRollNo(studentRec?.roll_no ?? '')
-      const initialClassId = studentRec?.class_id ? String(studentRec.class_id) : ''
-      setEditClassId(initialClassId)
-      setEditBatchId(studentRec?.batch_id ? String(studentRec.batch_id) : '')
-
-      // Auto-populate department from student's enrolled class if present
-      const initialDeptId = studentRec?.classes?.department_id
-        ? String(studentRec.classes.department_id)
-        : classes?.find(c => String(c.id) === initialClassId)?.department_id
-          ? String(classes.find(c => String(c.id) === initialClassId)?.department_id)
-          : ''
-      setEditStudentDeptId(initialDeptId)
-    } else if (user.role === 'professor') {
-      const profRec = extractSingleRelation(user.professors)
-      setEditDepartmentId(profRec?.department_id ? String(profRec.department_id) : '')
-    }
   }
 
   // Toggle user active status
@@ -391,129 +245,6 @@ export default function AdminUsersPage() {
     },
     onError: (err: any) => toast.error(err.message),
   })
-
-  // Bulk CSV Import (Strictly through secure Edge Function)
-  async function handleCsvImport() {
-    if (isImporting) return
-
-    const parsed = parseCsvInput(csvText, 500)
-    if (parsed.error) {
-      toast.error(parsed.error)
-      return
-    }
-
-    const { headers, rows } = parsed
-    // Match headers dynamically or fall back to standard positional indexes
-    const nameIdx = headers.indexOf('name') !== -1 ? headers.indexOf('name') : 0
-    const emailIdx = headers.indexOf('email') !== -1 ? headers.indexOf('email') : 1
-    const passwordIdx = headers.indexOf('password') !== -1 ? headers.indexOf('password') : 2
-    const rollIdx = headers.indexOf('roll_no') !== -1 ? headers.indexOf('roll_no') : (headers.indexOf('rollno') !== -1 ? headers.indexOf('rollno') : 3)
-    const classIdx = headers.indexOf('class_name') !== -1 ? headers.indexOf('class_name') : (headers.indexOf('class') !== -1 ? headers.indexOf('class') : 4)
-    const batchIdx = headers.indexOf('batch_name') !== -1 ? headers.indexOf('batch_name') : (headers.indexOf('batch') !== -1 ? headers.indexOf('batch') : 5)
-
-    setIsImporting(true)
-    let successCount = 0
-    let errorCount = 0
-
-    // Header: name,email,password,roll_no,class_name,batch_name
-    for (let i = 0; i < rows.length; i++) {
-      const parts = rows[i]
-      const name = parts[nameIdx]?.trim() || ''
-      const email = parts[emailIdx]?.trim() || ''
-      const password = parts[passwordIdx] || ''
-      const rawRollNo = parts[rollIdx]?.trim() || ''
-      const class_name = parts[classIdx]?.trim() || ''
-      const batch_name = parts[batchIdx]?.trim() || ''
-
-      // Sanitize roll number against null bytes and control chars
-      // eslint-disable-next-line no-control-regex
-      const roll_no = rawRollNo.replace(/[\0\x00-\x1F\x7F]/g, '').trim()
-
-      if (!name || !email || !password || !roll_no || !class_name) {
-        errorCount++
-        continue
-      }
-
-      // Password security check
-      const passCheck = validatePassword(password)
-      if (!passCheck.isValid) {
-        console.error(`Line ${i + 2}: ${passCheck.error}`)
-        errorCount++
-        continue
-      }
-
-      try {
-        const targetClass = classes?.find(c => c.name.toLowerCase() === class_name.toLowerCase())
-        if (!targetClass) {
-          throw new Error(`Class ${class_name} not found`)
-        }
-
-        let targetBatchId: number | null = null
-        if (batch_name) {
-          const { data: bData, error: bErr } = await supabase
-            .from('batches')
-            .select('id')
-            .eq('class_id', targetClass.id)
-            .ilike('name', batch_name)
-            .maybeSingle()
-          if (!bErr && bData) targetBatchId = bData.id
-        }
-
-        const cleanEmail = normalizeEmail(email)
-        const emailCheck = validateEmail(cleanEmail)
-        if (!emailCheck.isValid) {
-          throw new Error(`Line ${i + 2}: ${emailCheck.error}`)
-        }
-
-        // Provision via admin-create-user Edge Function
-        const { data: funcData, error: funcError } = await supabase.functions.invoke('admin-create-user', {
-          body: {
-            name: name.trim(),
-            email: cleanEmail,
-            password,
-            role: 'student',
-            rollNo: roll_no.trim(),
-            classId: String(targetClass.id),
-            batchId: targetBatchId ? String(targetBatchId) : undefined,
-          },
-        })
-
-        if (funcError || !funcData?.success) {
-          let msg = funcError?.message || funcData?.error || 'Failed to create student'
-          if (msg.includes('non-2xx') || msg.includes('404') || (funcError as any)?.context?.status === 404) {
-            msg = "Edge Function 'admin-create-user' is not deployed (HTTP 404). Deploy with 'supabase functions deploy admin-create-user'."
-          }
-          throw new Error(msg)
-        }
-
-        successCount++
-      } catch (e) {
-        console.error('Import error on line', i + 2, e)
-        errorCount++
-      }
-    }
-
-    setIsImporting(false)
-    const outcome = evaluateCsvImportOutcome(successCount, errorCount)
-
-    if (successCount > 0) {
-      queryClient.invalidateQueries({ queryKey: ['admin-users'] })
-      queryClient.invalidateQueries({ queryKey: ['admin-stats'] })
-    }
-
-    if (outcome.shouldCloseModal) {
-      setShowCsvImport(false)
-    }
-    if (outcome.shouldClearInput) {
-      setCsvText('')
-    }
-
-    if (outcome.status === 'success') {
-      toast.success(outcome.message)
-    } else {
-      toast.error(outcome.message)
-    }
-  }
 
   // Paginated user list
   const users = usersData?.items ?? []
@@ -652,181 +383,24 @@ export default function AdminUsersPage() {
         )}
 
         {/* CSV Import Card */}
-        {showCsvImport && (
-          <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="font-bold text-gray-900 text-sm">Bulk Import Students via CSV</h3>
-              <button
-                type="button"
-                className="text-xs text-blue-600 hover:underline"
-                onClick={() => {
-                  const firstClass = classes?.[0]?.name ?? 'CS-A'
-                  setCsvText(
-                    `name,email,password,roll_no,class_name,batch_name\nAakash Sharma,aakash@gmail.com,Pass1234,CS001,${firstClass},Batch 1\nBhavna Patel,bhavna@gmail.com,Pass1234,CS002,${firstClass},Batch 1\nChirag Verma,chirag@gmail.com,Pass1234,CS003,${firstClass},Batch 2`
-                  )
-                }}
-              >
-                Fill Sample Data
-              </button>
-            </div>
-
-            <p className="text-xs text-gray-500">
-              Format: <code>name,email,password,roll_no,class_name,batch_name</code>. The header row is required.
-            </p>
-
-            <textarea
-              className="w-full font-mono text-xs border border-gray-300 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              rows={6}
-              placeholder="name,email,password,roll_no,class_name,batch_name"
-              value={csvText}
-              onChange={e => setCsvText(e.target.value)}
-            />
-
-            <Button
-              className="w-full"
-              loading={isImporting}
-              onClick={handleCsvImport}
-            >
-              Start Import
-            </Button>
-          </div>
-        )}
+        <CsvImportCard
+          isOpen={showCsvImport}
+          classes={classes}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+            queryClient.invalidateQueries({ queryKey: ['admin-stats'] })
+          }}
+          onClose={() => setShowCsvImport(false)}
+        />
 
         {/* Edit Enrollment / Department Modal */}
-        {editingUser && (
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in">
-            <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
-              <div className="flex items-center justify-between border-b border-gray-100 pb-3">
-                <div>
-                  <h3 className="font-bold text-gray-900 text-base">
-                    {editingUser.role === 'student' ? 'Manage Student Enrollment' : 'Assign Professor Department'}
-                  </h3>
-                  <p className="text-xs text-gray-500 mt-0.5">{editingUser.name}</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setEditingUser(null)}
-                  className="p-1.5 text-gray-400 hover:text-gray-700 rounded-full hover:bg-gray-100"
-                >
-                  <X size={18} />
-                </button>
-              </div>
-
-              {editingUser.role === 'student' && (
-                <div className="space-y-3">
-                  <Input
-                    label="Roll Number"
-                    placeholder="e.g. CS2401"
-                    value={editRollNo}
-                    onChange={e => setEditRollNo(e.target.value)}
-                  />
-
-                  {/* Academic Department / Branch Filter */}
-                  <div>
-                    <Select
-                      label="Academic Department / Branch"
-                      placeholder="Select department / branch..."
-                      value={editStudentDeptId}
-                      onChange={e => {
-                        const newDeptId = e.target.value
-                        setEditStudentDeptId(newDeptId)
-                        if (newDeptId && editClassId) {
-                          const cls = classes?.find(c => String(c.id) === editClassId)
-                          if (cls && String(cls.department_id) !== newDeptId) {
-                            setEditClassId('')
-                            setEditBatchId('')
-                          }
-                        }
-                      }}
-                      options={departments?.map(d => ({ value: d.id, label: d.name })) ?? []}
-                    />
-                    <p className="text-[11px] text-gray-500 mt-1">
-                      Filtering class divisions by department. Students belong to a branch via their class enrollment.
-                    </p>
-                  </div>
-
-                  <Select
-                    label="Class Division"
-                    placeholder="Select class division..."
-                    value={editClassId}
-                    onChange={e => {
-                      const newClassId = e.target.value
-                      setEditClassId(newClassId)
-                      setEditBatchId('')
-                      if (newClassId) {
-                        const cls = classes?.find(c => String(c.id) === newClassId)
-                        if (cls?.department_id) {
-                          setEditStudentDeptId(String(cls.department_id))
-                        }
-                      }
-                    }}
-                    options={(editStudentDeptId
-                      ? classes?.filter(c => String(c.department_id) === editStudentDeptId)
-                      : classes
-                    )?.map(c => ({
-                      value: c.id,
-                      label: `${c.name} — Sem ${c.semester} (${(c.departments as any)?.name ?? 'Dept'})`,
-                    })) ?? []}
-                  />
-
-                  {editBatches && editBatches.length > 0 && (
-                    <Select
-                      label="Practical Batch (Optional)"
-                      placeholder="General / All Batches"
-                      value={editBatchId}
-                      onChange={e => setEditBatchId(e.target.value)}
-                      options={editBatches.map(b => ({ value: b.id, label: b.name }))}
-                    />
-                  )}
-
-                  {(() => {
-                    const selectedClass = classes?.find(c => String(c.id) === editClassId)
-                    if (!selectedClass) return null
-                    const deptName = (selectedClass.departments as any)?.name ?? departments?.find(d => d.id === selectedClass.department_id)?.name
-                    return (
-                      <div className="bg-blue-50/70 border border-blue-100 rounded-xl p-2.5 text-xs text-blue-900">
-                        <span className="font-semibold">Derived Branch:</span>{' '}
-                        {deptName || 'Assigned'}
-                        <span className="text-blue-600 block text-[11px] mt-0.5">
-                          Academic Year: {selectedClass.academic_year} · Semester {selectedClass.semester}
-                        </span>
-                      </div>
-                    )
-                  })()}
-                </div>
-              )}
-
-              {editingUser.role === 'professor' && (
-                <div className="space-y-3">
-                  <Select
-                    label="Department"
-                    placeholder="Select department..."
-                    value={editDepartmentId}
-                    onChange={e => setEditDepartmentId(e.target.value)}
-                    options={departments?.map(d => ({ value: d.id, label: d.name })) ?? []}
-                  />
-                </div>
-              )}
-
-              <div className="flex gap-2 pt-2">
-                <Button
-                  variant="outline"
-                  className="flex-1"
-                  onClick={() => setEditingUser(null)}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  className="flex-1"
-                  loading={saveAssignmentMutation.isPending}
-                  onClick={() => saveAssignmentMutation.mutate()}
-                >
-                  Save Assignment
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
+        <UserEnrollmentModal
+          user={editingUser}
+          departments={departments}
+          classes={classes}
+          onClose={() => setEditingUser(null)}
+          onSuccess={() => refetchUsers()}
+        />
 
         {/* Search & Role Filters */}
         <div className="space-y-2">
