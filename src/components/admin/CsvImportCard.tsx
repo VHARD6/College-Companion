@@ -193,13 +193,25 @@ export default function CsvImportCard({
         onChange={e => setCsvText(e.target.value)}
       />
 
-      <Button
-        className="w-full"
-        loading={isImporting}
-        onClick={handleCsvImport}
-      >
-        Start Import
-      </Button>
+      <div className="flex gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          className="flex-1"
+          onClick={onClose}
+          disabled={isImporting}
+        >
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          className="flex-1"
+          loading={isImporting}
+          onClick={handleCsvImport}
+        >
+          Start Import
+        </Button>
+      </div>
     </div>
   )
 }

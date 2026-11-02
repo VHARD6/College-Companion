@@ -317,6 +317,7 @@ export default function TeachingAssignmentsPage() {
                       type="button"
                       className="text-gray-400 hover:text-red-600 p-2 rounded-lg transition-colors"
                       title="Remove assignment"
+                      aria-label="Remove assignment"
                       onClick={() => {
                         if (window.confirm(`Remove assignment for ${subj?.name} (${cls?.name})?`)) {
                           deleteAssignmentMutation.mutate(a.id)

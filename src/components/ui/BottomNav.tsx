@@ -37,7 +37,10 @@ export default function BottomNav({ role }: { role: Role }) {
   const items = navByRole[role]
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 flex z-30">
+    <nav
+      className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 flex z-30"
+      style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+    >
       {items.map(item => (
         <NavLink
           key={item.to}

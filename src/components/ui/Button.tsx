@@ -7,6 +7,7 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 export default function Button({
+  type = 'button',
   variant = 'primary',
   size = 'md',
   loading = false,
@@ -32,6 +33,7 @@ export default function Button({
 
   return (
     <button
+      type={type}
       className={`${base} ${variants[variant]} ${sizes[size]} ${className}`}
       disabled={disabled || loading}
       {...rest}

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
 import TopBar from '../../components/ui/TopBar'
@@ -107,6 +107,7 @@ export default function AdminSettingsPage() {
 }
 
 function StructureSummary() {
+  const navigate = useNavigate()
   const { data } = useQuery({
     queryKey: ['admin-structure-summary'],
     queryFn: async () => {
@@ -124,8 +125,13 @@ function StructureSummary() {
   })
 
   return (
-    <Card>
-      <h2 className="font-semibold text-gray-900 mb-3">Academic Structure Summary</h2>
+    <Card onClick={() => navigate('/admin/structure')} className="hover:shadow-md cursor-pointer transition-shadow">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-semibold text-gray-900">Academic Structure Summary</h2>
+        <span className="text-xs text-blue-600 font-medium hover:underline inline-flex items-center gap-1">
+          Manage <ExternalLink size={12} />
+        </span>
+      </div>
       <div className="grid grid-cols-3 gap-4 text-center">
         <div>
           <p className="text-2xl font-bold text-blue-600">{data?.departments ?? '--'}</p>

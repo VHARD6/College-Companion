@@ -990,7 +990,10 @@ export default function MarkAttendancePage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col pb-36">
+    <div
+      className="min-h-screen bg-gray-50 flex flex-col pb-36"
+      style={{ paddingBottom: 'calc(9rem + env(safe-area-inset-bottom, 0px))' }}
+    >
       <TopBar
         title={stepTitles[currentStep]}
         showBack
@@ -1568,7 +1571,10 @@ export default function MarkAttendancePage() {
           FIXED BOTTOM ACTION BAR PER STEP
           ───────────────────────────────────────────────────────────────────── */}
       {!isLocked && !hasError && !isLoading && (students?.length ?? 0) > 0 && (
-        <div className="fixed bottom-[56px] left-0 right-0 bg-white border-t border-gray-200 p-3 z-30 shadow-lg">
+        <div
+          className="fixed left-0 right-0 bg-white border-t border-gray-200 p-3 z-30 shadow-lg"
+          style={{ bottom: 'calc(56px + env(safe-area-inset-bottom, 0px))' }}
+        >
           <div className="max-w-lg mx-auto space-y-2">
             {saveAuthError && (
               <div className="bg-red-50 border border-red-200 rounded-xl p-2.5 text-xs text-red-900 flex items-center justify-between gap-2">

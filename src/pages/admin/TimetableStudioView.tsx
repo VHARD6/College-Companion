@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
@@ -15,6 +15,7 @@ import {
   formatDateForOfficialDisplay,
 } from '../../lib/timetableImagePersistence'
 import { renderTimetableToDataUrl } from '../../lib/timetableImageRenderer'
+import { todayISO } from '../../lib/utils'
 import OfficialTimetableDocument from '../../components/timetable/OfficialTimetableDocument'
 import OfficialCellEditorModal from '../../components/timetable/OfficialCellEditorModal'
 import Button from '../../components/ui/Button'
@@ -36,7 +37,6 @@ export default function TimetableStudioView() {
   const { profile } = useAuth()
 
   // Date selection (default today in YYYY-MM-DD)
-  const todayISO = new Date().toISOString().split('T')[0]
   const [selectedDate, setSelectedDate] = useState<string>(todayISO)
 
   // Daily announcement
@@ -44,7 +44,7 @@ export default function TimetableStudioView() {
 
   // Grid Data State initialized with official college template
   const [gridData, setGridData] = useState<MasterTimetableGridData>(() =>
-    createDefaultMasterTimetable(formatDateForOfficialDisplay(todayISO))
+    createDefaultMasterTimetable(formatDateForOfficialDisplay(todayISO()))
   )
 
   // Cell Editor Modal State
@@ -58,13 +58,14 @@ export default function TimetableStudioView() {
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
   const [isGeneratingPreview, setIsGeneratingPreview] = useState(false)
 
-  // Sync date change with gridData.date
-  useEffect(() => {
+  // Handle date changes synchronously without effect cascades
+  const handleDateChange = (newDate: string) => {
+    setSelectedDate(newDate)
     setGridData(prev => ({
       ...prev,
-      date: formatDateForOfficialDisplay(selectedDate),
+      date: formatDateForOfficialDisplay(newDate),
     }))
-  }, [selectedDate])
+  }
 
   // Query: Reference subjects for dropdowns
   const { data: subjects = [] } = useQuery<Subject[]>({
@@ -244,7 +245,7 @@ export default function TimetableStudioView() {
             <input
               type="date"
               value={selectedDate}
-              onChange={e => setSelectedDate(e.target.value)}
+              onChange={e => handleDateChange(e.target.value)}
               className="w-full text-xs rounded-xl border border-gray-300 px-3 py-2 bg-white font-medium"
             />
           </div>
@@ -328,16 +329,19 @@ export default function TimetableStudioView() {
       </div>
 
       {/* ─── Cell Editor Modal ──────────────────────────────────── */}
-      <OfficialCellEditorModal
-        isOpen={isEditorOpen}
-        onClose={() => setIsEditorOpen(false)}
-        branch={activeBranch}
-        periodLabel={activePeriodLabel}
-        initialData={activeCellData}
-        subjects={subjects}
-        professors={professors}
-        onSave={handleSaveCell}
-      />
+      {isEditorOpen && (
+        <OfficialCellEditorModal
+          key={activeCellKey ?? 'editor'}
+          isOpen={isEditorOpen}
+          onClose={() => setIsEditorOpen(false)}
+          branch={activeBranch}
+          periodLabel={activePeriodLabel}
+          initialData={activeCellData}
+          subjects={subjects}
+          professors={professors}
+          onSave={handleSaveCell}
+        />
+      )}
 
       {/* ─── High-Res Image Preview Modal ──────────────────────── */}
       {previewImageUrl && (

@@ -357,8 +357,10 @@ export default function FullscreenImageViewer({
         </div>
       </div>
 
-      {/* ─── Bottom Floating Zoom Controls ───────────────────────────── */}
-      <div className="relative z-20 px-3 py-2 bg-black/80 border-t border-gray-800 flex items-center justify-between text-white backdrop-blur-xs">
+      <div
+        className="relative z-20 px-3 py-2 bg-black/80 border-t border-gray-800 flex items-center justify-between text-white backdrop-blur-xs"
+        style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom, 0px))' }}
+      >
         <div className="flex items-center gap-1.5">
           <button
             type="button"

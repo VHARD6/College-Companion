@@ -6,7 +6,7 @@ import { logTimetableDiagnostic } from '../../lib/errors'
 import TopBar from '../../components/ui/TopBar'
 import Spinner from '../../components/ui/Spinner'
 import Button from '../../components/ui/Button'
-import { WEEKDAY_FULL, formatTime, todayWeekday } from '../../lib/utils'
+import { WEEKDAY_FULL, formatTime, todayWeekday, todayISO } from '../../lib/utils'
 import {
   AlertCircle,
   RefreshCw,
@@ -33,7 +33,6 @@ export default function TimetablePage() {
   const [activeTab, setActiveTab] = useState<'schedule' | 'master'>('schedule')
 
   // Today ISO date (YYYY-MM-DD)
-  const todayISO = new Date().toISOString().split('T')[0]
   const [selectedDate, setSelectedDate] = useState<string>(todayISO)
 
   // Fullscreen Zoom Modal State
@@ -138,10 +137,10 @@ export default function TimetablePage() {
   // If initial selectedDate has no timetable, auto-select the latest published date if available
   useEffect(() => {
     if (publishedDates.length > 0) {
-      const hasCurrent = publishedDates.some(p => p.timetable_date === selectedDate)
-      if (!hasCurrent) {
-        setSelectedDate(publishedDates[0].timetable_date)
-      }
+      setSelectedDate(current => {
+        const hasCurrent = publishedDates.some(p => p.timetable_date === current)
+        return hasCurrent ? current : publishedDates[0].timetable_date
+      })
     }
   }, [publishedDates])
 
@@ -160,7 +159,7 @@ export default function TimetablePage() {
       if (exact) return exact
 
       // If no exact match and selected date is today, check latest available
-      if (selectedDate === todayISO) {
+      if (selectedDate === todayISO()) {
         return await fetchLatestPublishedTimetable('FY BTECH')
       }
       return null

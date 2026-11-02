@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
 import TopBar from '../../components/ui/TopBar'
 import Card from '../../components/ui/Card'
-import { Users, BookOpen, GraduationCap, BarChart2 } from 'lucide-react'
+import { Users, BookOpen, GraduationCap, BarChart2, Settings } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import Spinner from '../../components/ui/Spinner'
 
@@ -110,7 +110,7 @@ export default function AdminDashboard() {
           </Card>
           <Card onClick={() => navigate('/admin/settings')} className="hover:shadow-md">
             <div className="flex items-center gap-3">
-              <BarChart2 size={20} className="text-gray-600" />
+              <Settings size={20} className="text-gray-600" />
               <div>
                 <p className="font-medium text-gray-900">Settings & Policy</p>
                 <p className="text-xs text-gray-500">Attendance policy &amp; correction window</p>

@@ -168,7 +168,7 @@ function AssignmentReport({ assignment }: { assignment: any }) {
       </p>
 
       {isLoading ? (
-        <Spinner className="h-6 w-6" />
+        <div className="flex justify-center py-4"><Spinner className="h-6 w-6" /></div>
       ) : isError ? (
         <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-center space-y-1">
           <p className="text-xs text-red-700">Failed to load statistics: {(error as any)?.message}</p>

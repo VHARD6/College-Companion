@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import type { TimetableCellData, TimetablePracticalBatch } from '../../types/timetableMaker.ts'
 import type { Subject, Professor } from '../../types'
 import Button from '../ui/Button'
@@ -29,62 +29,33 @@ export default function OfficialCellEditorModal({
   professors,
   onSave,
 }: Props) {
-  const [mode, setMode] = useState<'theory' | 'practical_single' | 'practical_batch' | 'empty'>('theory')
-  const [practicalSpan, setPracticalSpan] = useState<number>(2)
+  const [mode, setMode] = useState<'theory' | 'practical_single' | 'practical_batch' | 'empty'>(() => {
+    if (!initialData || initialData.type === 'empty' || initialData.text === '-') return 'empty'
+    if (initialData.type === 'practical') {
+      return initialData.batch1 && initialData.batch2 ? 'practical_batch' : 'practical_single'
+    }
+    return 'theory'
+  })
+  const [practicalSpan, setPracticalSpan] = useState<number>(() => {
+    if (initialData?.type === 'practical') {
+      return initialData.rowSpan ?? (initialData.batch1 && initialData.batch2 ? 1 : 2)
+    }
+    return 2
+  })
 
   // Theory or single practical fields
-  const [subject, setSubject] = useState('')
-  const [professorAbbr, setProfessorAbbr] = useState('')
-  const [room, setRoom] = useState('')
+  const [subject, setSubject] = useState(() => initialData?.subject || '')
+  const [professorAbbr, setProfessorAbbr] = useState(() => initialData?.professorAbbr || '')
+  const [room, setRoom] = useState(() => initialData?.room || '')
 
   // Batch split fields
-  const [b1Subject, setB1Subject] = useState('')
-  const [b1ProfAbbr, setB1ProfAbbr] = useState('')
-  const [b1Room, setB1Room] = useState('')
+  const [b1Subject, setB1Subject] = useState(() => initialData?.batch1?.subject || '')
+  const [b1ProfAbbr, setB1ProfAbbr] = useState(() => initialData?.batch1?.profAbbr || '')
+  const [b1Room, setB1Room] = useState(() => initialData?.batch1?.room || '')
 
-  const [b2Subject, setB2Subject] = useState('')
-  const [b2ProfAbbr, setB2ProfAbbr] = useState('')
-  const [b2Room, setB2Room] = useState('')
-
-  useEffect(() => {
-    if (!isOpen) return
-
-    if (!initialData || initialData.type === 'empty' || initialData.text === '-') {
-      setMode('empty')
-      setSubject('')
-      setProfessorAbbr('')
-      setRoom('')
-      setB1Subject('')
-      setB1ProfAbbr('')
-      setB1Room('')
-      setB2Subject('')
-      setB2ProfAbbr('')
-      setB2Room('')
-      setPracticalSpan(2)
-    } else if (initialData.type === 'practical') {
-      if (initialData.batch1 && initialData.batch2) {
-        setPracticalSpan(initialData.rowSpan ?? 1)
-        setMode('practical_batch')
-        setB1Subject(initialData.batch1.subject || '')
-        setB1ProfAbbr(initialData.batch1.profAbbr || '')
-        setB1Room(initialData.batch1.room || '')
-        setB2Subject(initialData.batch2.subject || '')
-        setB2ProfAbbr(initialData.batch2.profAbbr || '')
-        setB2Room(initialData.batch2.room || '')
-      } else {
-        setPracticalSpan(initialData.rowSpan ?? 2)
-        setMode('practical_single')
-        setSubject(initialData.subject || '')
-        setProfessorAbbr(initialData.professorAbbr || '')
-        setRoom(initialData.room || '')
-      }
-    } else {
-      setMode('theory')
-      setSubject(initialData.subject || '')
-      setProfessorAbbr(initialData.professorAbbr || '')
-      setRoom(initialData.room || '')
-    }
-  }, [isOpen, initialData])
+  const [b2Subject, setB2Subject] = useState(() => initialData?.batch2?.subject || '')
+  const [b2ProfAbbr, setB2ProfAbbr] = useState(() => initialData?.batch2?.profAbbr || '')
+  const [b2Room, setB2Room] = useState(() => initialData?.batch2?.room || '')
 
   if (!isOpen) return null
 

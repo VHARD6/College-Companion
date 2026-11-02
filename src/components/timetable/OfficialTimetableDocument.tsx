@@ -19,8 +19,9 @@ export default function OfficialTimetableDocument({
       className="bg-white p-3 md:p-6 text-black max-w-[1100px] mx-auto border-2 border-black shadow-lg overflow-x-auto select-none"
       style={{ fontFamily: '"Times New Roman", Times, "Liberation Serif", serif' }}
     >
-      {/* ─── 1. INSTITUTIONAL HEADER BOX ───────────────────────── */}
-      <div className="border border-black flex items-stretch">
+      <div className="min-w-[760px]">
+        {/* ─── 1. INSTITUTIONAL HEADER BOX ───────────────────────── */}
+        <div className="border border-black flex items-stretch">
         {/* Left: Logo (exact width matching Time column: 19.333%) */}
         <div
           style={{ width: OFFICIAL_TIMETABLE_GEOMETRY.timeColPercent }}
@@ -155,7 +156,7 @@ export default function OfficialTimetableDocument({
                       ) : formatted.isBatchSplit ? (
                         <div className="text-center font-bold text-[10px] sm:text-xs md:text-sm leading-tight px-0.5">
                           {formatted.lines.map((line, lIdx) => (
-                            <div key={lIdx} className="truncate">
+                            <div key={lIdx} className="truncate" title={line}>
                               {line}
                             </div>
                           ))}
@@ -163,7 +164,7 @@ export default function OfficialTimetableDocument({
                       ) : (
                         <div className="font-bold text-xs sm:text-sm md:text-base leading-snug text-center px-0.5">
                           {formatted.lines.map((line, lIdx) => (
-                            <div key={lIdx} className="truncate">
+                            <div key={lIdx} className="truncate" title={line}>
                               {line}
                             </div>
                           ))}
@@ -263,5 +264,6 @@ export default function OfficialTimetableDocument({
         </div>
       </div>
     </div>
+  </div>
   )
 }

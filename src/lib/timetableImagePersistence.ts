@@ -89,33 +89,28 @@ export async function publishOfficialTimetable({
   const fileName = `timetable_${className.replace(/\s+/g, '_')}_${isoDate}_${Date.now()}.png`
   const filePath = `published/${fileName}`
 
-  let uploadData: any
-  try {
-    const res = await client.storage
-      .from('timetables')
-      .upload(filePath, blob, {
-        contentType: 'image/png',
-        upsert: true,
-      })
+  const res = await client.storage
+    .from('timetables')
+    .upload(filePath, blob, {
+      contentType: 'image/png',
+      upsert: true,
+    })
 
-    if (res.error) {
-      const errMsg = res.error.message || 'Storage upload returned an error'
-      if (
-        errMsg.toLowerCase().includes('bucket not found') ||
-        errMsg.toLowerCase().includes('not found') ||
-        (res.error as any)?.statusCode === '404'
-      ) {
-        throw new Error(
-          "Supabase Storage bucket 'timetables' does not exist or is not accessible. " +
-          "Please apply migration 010 or create the private 'timetables' bucket in the Supabase Dashboard before publishing."
-        )
-      }
-      throw new Error(`Storage upload failed: ${errMsg}`)
+  if (res.error) {
+    const errMsg = res.error.message || 'Storage upload returned an error'
+    if (
+      errMsg.toLowerCase().includes('bucket not found') ||
+      errMsg.toLowerCase().includes('not found') ||
+      (res.error as any)?.statusCode === '404'
+    ) {
+      throw new Error(
+        "Supabase Storage bucket 'timetables' does not exist or is not accessible. " +
+        "Please apply migration 010 or create the private 'timetables' bucket in the Supabase Dashboard before publishing."
+      )
     }
-    uploadData = res.data
-  } catch (err: any) {
-    throw err
+    throw new Error(`Storage upload failed: ${errMsg}`)
   }
+  const uploadData = res.data
 
   if (!uploadData?.path) {
     throw new Error("Storage upload succeeded but returned no file path.")
