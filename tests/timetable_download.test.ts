@@ -178,6 +178,40 @@ describe('Timetable Download & Persistence Suite', () => {
       assert.equal(removed, true)
       assert.equal(downloadedFilename, 'Timetable_FY_BTech.png')
     })
+
+    it('revokes blob URL immediately if browser anchor dispatch throws (memory leak prevention)', async () => {
+      const mockBlob = new Blob(['browser-bytes'], { type: 'image/png' })
+      globalThis.fetch = async () => new Response(mockBlob, { status: 200 })
+
+      let revokedUrl = ''
+      ;(globalThis as any).URL.createObjectURL = () => 'blob:https://localhost/leak-check-uuid'
+      ;(globalThis as any).URL.revokeObjectURL = (url: string) => { revokedUrl = url }
+
+      ;(globalThis as any).document = {
+        createElement: () => ({
+          set href(_val: string) {},
+          set download(_val: string) {},
+          set rel(_val: string) {},
+          click: () => {},
+        }),
+        body: {
+          appendChild: () => {
+            throw new Error('DOM manipulation blocked')
+          },
+          removeChild: () => {},
+        },
+      }
+
+      ;(globalThis as any).window = {
+        open: () => {},
+      }
+
+      const result = await downloadTimetableImage('https://supabase.co/valid.png', 'Timetable_Leak_Test.png')
+
+      assert.equal(result.success, true)
+      assert.equal(result.method, 'tab-opened')
+      assert.equal(revokedUrl, 'blob:https://localhost/leak-check-uuid')
+    })
   })
 
   describe('downloadTimetableImage - Capacitor Native APK Flow', () => {

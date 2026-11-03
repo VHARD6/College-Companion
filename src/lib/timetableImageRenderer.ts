@@ -1,15 +1,47 @@
 import type { MasterTimetableGridData } from '../types/timetableMaker.ts'
 import { formatCellContent, OFFICIAL_TIMETABLE_GEOMETRY } from './timetableCellFormatter.ts'
 
+let cachedLogoPromise: Promise<HTMLImageElement | null> | null = null
+
 /**
  * Loads an image from a URL or data path safely into an HTMLImageElement.
+ * Caches the institutional logo to prevent repeated decoding and listener closure leaks.
  */
 function loadImage(src: string): Promise<HTMLImageElement | null> {
+  if (src === '/mes_logo.png') {
+    if (!cachedLogoPromise) {
+      cachedLogoPromise = new Promise(resolve => {
+        const img = new Image()
+        img.crossOrigin = 'anonymous'
+        img.onload = () => {
+          img.onload = null
+          img.onerror = null
+          resolve(img)
+        }
+        img.onerror = () => {
+          img.onload = null
+          img.onerror = null
+          resolve(null)
+        }
+        img.src = src
+      })
+    }
+    return cachedLogoPromise
+  }
+
   return new Promise(resolve => {
     const img = new Image()
     img.crossOrigin = 'anonymous'
-    img.onload = () => resolve(img)
-    img.onerror = () => resolve(null)
+    img.onload = () => {
+      img.onload = null
+      img.onerror = null
+      resolve(img)
+    }
+    img.onerror = () => {
+      img.onload = null
+      img.onerror = null
+      resolve(null)
+    }
     img.src = src
   })
 }
@@ -433,13 +465,19 @@ export async function renderTimetableToBlob(
   scale = 2
 ): Promise<Blob> {
   const canvas = document.createElement('canvas')
-  await renderTimetableToCanvas(grid, canvas, scale)
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(blob => {
-      if (blob) resolve(blob)
-      else reject(new Error('Canvas toBlob conversion failed'))
-    }, 'image/png')
-  })
+  try {
+    await renderTimetableToCanvas(grid, canvas, scale)
+    return await new Promise((resolve, reject) => {
+      canvas.toBlob(blob => {
+        if (blob) resolve(blob)
+        else reject(new Error('Canvas toBlob conversion failed'))
+      }, 'image/png')
+    })
+  } finally {
+    // Release large canvas bitmap buffer from browser/GPU memory immediately
+    canvas.width = 0
+    canvas.height = 0
+  }
 }
 
 /**
@@ -450,6 +488,12 @@ export async function renderTimetableToDataUrl(
   scale = 2
 ): Promise<string> {
   const canvas = document.createElement('canvas')
-  await renderTimetableToCanvas(grid, canvas, scale)
-  return canvas.toDataURL('image/png')
+  try {
+    await renderTimetableToCanvas(grid, canvas, scale)
+    return canvas.toDataURL('image/png')
+  } finally {
+    // Release large canvas bitmap buffer from browser/GPU memory immediately
+    canvas.width = 0
+    canvas.height = 0
+  }
 }

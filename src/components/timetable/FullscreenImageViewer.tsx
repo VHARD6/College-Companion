@@ -86,12 +86,16 @@ export default function FullscreenImageViewer({
     }
   }, [isOpen, updateContainerDimensions])
 
-  // Reset transform state when modal opens or image changes
+  // Reset transform state when modal opens or image changes, and cleanup pointers on close/unmount
   useEffect(() => {
+    const activePointers = activePointersRef.current
     if (isOpen) {
       setZoom(1.0)
       setPan({ x: 0, y: 0 })
-      activePointersRef.current.clear()
+      activePointers.clear()
+    }
+    return () => {
+      activePointers.clear()
     }
   }, [isOpen, imageUrl])
 

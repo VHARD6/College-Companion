@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
@@ -57,6 +57,13 @@ export default function TimetableStudioView() {
   // Image Preview Modal State
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
   const [isGeneratingPreview, setIsGeneratingPreview] = useState(false)
+
+  // Clean up large preview data URL string from memory when component unmounts
+  useEffect(() => {
+    return () => {
+      setPreviewImageUrl(null)
+    }
+  }, [])
 
   // Handle date changes synchronously without effect cascades
   const handleDateChange = (newDate: string) => {

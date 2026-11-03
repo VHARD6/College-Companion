@@ -32,7 +32,7 @@ import TimetableAdminPage from './pages/admin/TimetablePage'
 import ReportsPage from './pages/admin/ReportsPage'
 
 import { useEffect } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { Capacitor } from '@capacitor/core'
 import { App as CapApp } from '@capacitor/app'
 import { StatusBar, Style } from '@capacitor/status-bar'
@@ -47,7 +47,6 @@ import { dispatchHardwareBack } from './lib/backButtonHandler'
  */
 function NativeMobileHandler() {
   const navigate = useNavigate()
-  const location = useLocation()
 
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return
@@ -84,7 +83,7 @@ function NativeMobileHandler() {
     return () => {
       backListener.then(handle => handle.remove()).catch(() => {})
     }
-  }, [navigate, location])
+  }, [navigate])
 
   return null
 }

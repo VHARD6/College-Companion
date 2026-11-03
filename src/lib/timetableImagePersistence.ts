@@ -552,8 +552,9 @@ export async function downloadTimetableImage(
 
   // 2b. Standard Browser Blob Download (Desktop & browsers without Web Share)
   if (typeof document !== 'undefined') {
+    let blobUrl: string | null = null
     try {
-      const blobUrl = URL.createObjectURL(blob)
+      blobUrl = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = blobUrl
       a.download = safeFilename
@@ -561,13 +562,20 @@ export async function downloadTimetableImage(
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
+      setTimeout(() => {
+        if (blobUrl) {
+          URL.revokeObjectURL(blobUrl)
+        }
+      }, 1000)
       return {
         success: true,
         method: 'browser-download',
         message: `Downloading ${safeFilename}...`,
       }
     } catch {
+      if (blobUrl) {
+        URL.revokeObjectURL(blobUrl)
+      }
       // Fall through to window.open
     }
   }
