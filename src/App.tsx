@@ -8,30 +8,30 @@ import UnauthorizedPage from './pages/auth/UnauthorizedPage'
 import PrivacyPolicyPage from './pages/public/PrivacyPolicyPage'
 import ProtectedRoute from './components/ui/ProtectedRoute'
 
-// ─── Student ─────────────────────────────────────────────────────────────────
-import StudentLayout from './pages/student/StudentLayout'
-import StudentHome from './pages/student/StudentHome'
-import AttendanceOverviewPage from './pages/student/AttendanceOverviewPage'
-import SubjectDetailPage from './pages/student/SubjectDetailPage'
-import TimetablePage from './pages/student/TimetablePage'
+// ─── Student (Lazy Loaded) ───────────────────────────────────────────────────
+const StudentLayout = lazy(() => import('./pages/student/StudentLayout'))
+const StudentHome = lazy(() => import('./pages/student/StudentHome'))
+const AttendanceOverviewPage = lazy(() => import('./pages/student/AttendanceOverviewPage'))
+const SubjectDetailPage = lazy(() => import('./pages/student/SubjectDetailPage'))
+const TimetablePage = lazy(() => import('./pages/student/TimetablePage'))
 
-// ─── Professor ───────────────────────────────────────────────────────────────
-import ProfessorLayout from './pages/professor/ProfessorLayout'
-import ProfessorHome from './pages/professor/ProfessorHome'
-import MarkAttendancePage from './pages/professor/MarkAttendancePage'
-import ProfessorReportsPage from './pages/professor/ProfessorReportsPage'
+// ─── Professor (Lazy Loaded) ─────────────────────────────────────────────────
+const ProfessorLayout = lazy(() => import('./pages/professor/ProfessorLayout'))
+const ProfessorHome = lazy(() => import('./pages/professor/ProfessorHome'))
+const MarkAttendancePage = lazy(() => import('./pages/professor/MarkAttendancePage'))
+const ProfessorReportsPage = lazy(() => import('./pages/professor/ProfessorReportsPage'))
 
-// ─── Admin ───────────────────────────────────────────────────────────────────
-import AdminLayout from './pages/admin/AdminLayout'
-import AdminDashboard from './pages/admin/AdminDashboard'
-import AdminUsersPage from './pages/admin/AdminUsersPage'
-import AdminStructurePage from './pages/admin/AdminStructurePage'
-import AdminSettingsPage from './pages/admin/AdminSettingsPage'
-import TeachingAssignmentsPage from './pages/admin/TeachingAssignmentsPage'
-import TimetableAdminPage from './pages/admin/TimetablePage'
-import ReportsPage from './pages/admin/ReportsPage'
+// ─── Admin (Lazy Loaded) ─────────────────────────────────────────────────────
+const AdminLayout = lazy(() => import('./pages/admin/AdminLayout'))
+const AdminDashboard = lazy(() => import('./pages/admin/AdminDashboard'))
+const AdminUsersPage = lazy(() => import('./pages/admin/AdminUsersPage'))
+const AdminStructurePage = lazy(() => import('./pages/admin/AdminStructurePage'))
+const AdminSettingsPage = lazy(() => import('./pages/admin/AdminSettingsPage'))
+const TeachingAssignmentsPage = lazy(() => import('./pages/admin/TeachingAssignmentsPage'))
+const TimetableAdminPage = lazy(() => import('./pages/admin/TimetablePage'))
+const ReportsPage = lazy(() => import('./pages/admin/ReportsPage'))
 
-import { useEffect } from 'react'
+import { useEffect, lazy, Suspense } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Capacitor } from '@capacitor/core'
 import { App as CapApp } from '@capacitor/app'
@@ -41,6 +41,17 @@ import { SplashScreen } from '@capacitor/splash-screen'
 // Shared QueryClient singleton — also used by useAuth for cache cleanup on sign-out
 import { queryClient } from './lib/queryClient'
 import { dispatchHardwareBack } from './lib/backButtonHandler'
+
+/**
+ * Lightweight loading indicator for lazy-loaded route chunks
+ */
+function PageFallback() {
+  return (
+    <div className="flex min-h-[50vh] items-center justify-center p-6">
+      <div className="animate-spin rounded-full h-8 w-8 border-4 border-blue-600 border-t-transparent" />
+    </div>
+  )
+}
 
 /**
  * Handles Android hardware back button and status bar in native runtime
@@ -93,62 +104,64 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <NativeMobileHandler />
-        <Routes>
-          {/* Public routes */}
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/unauthorized" element={<UnauthorizedPage />} />
-          <Route path="/privacy" element={<PrivacyPolicyPage />} />
+        <Suspense fallback={<PageFallback />}>
+          <Routes>
+            {/* Public routes */}
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/unauthorized" element={<UnauthorizedPage />} />
+            <Route path="/privacy" element={<PrivacyPolicyPage />} />
 
-          {/* Student routes */}
-          <Route
-            path="/student"
-            element={
-              <ProtectedRoute allowedRoles={['student']}>
-                <StudentLayout />
-              </ProtectedRoute>
-            }
-          >
-            <Route index element={<StudentHome />} />
-            <Route path="attendance" element={<AttendanceOverviewPage />} />
-            <Route path="subject/:subjectId" element={<SubjectDetailPage />} />
-            <Route path="timetable" element={<TimetablePage />} />
-          </Route>
+            {/* Student routes */}
+            <Route
+              path="/student"
+              element={
+                <ProtectedRoute allowedRoles={['student']}>
+                  <StudentLayout />
+                </ProtectedRoute>
+              }
+            >
+              <Route index element={<StudentHome />} />
+              <Route path="attendance" element={<AttendanceOverviewPage />} />
+              <Route path="subject/:subjectId" element={<SubjectDetailPage />} />
+              <Route path="timetable" element={<TimetablePage />} />
+            </Route>
 
-          {/* Professor routes */}
-          <Route
-            path="/professor"
-            element={
-              <ProtectedRoute allowedRoles={['professor']}>
-                <ProfessorLayout />
-              </ProtectedRoute>
-            }
-          >
-            <Route index element={<ProfessorHome />} />
-            <Route path="mark" element={<MarkAttendancePage />} />
-            <Route path="reports" element={<ProfessorReportsPage />} />
-          </Route>
+            {/* Professor routes */}
+            <Route
+              path="/professor"
+              element={
+                <ProtectedRoute allowedRoles={['professor']}>
+                  <ProfessorLayout />
+                </ProtectedRoute>
+              }
+            >
+              <Route index element={<ProfessorHome />} />
+              <Route path="mark" element={<MarkAttendancePage />} />
+              <Route path="reports" element={<ProfessorReportsPage />} />
+            </Route>
 
-          {/* Admin routes */}
-          <Route
-            path="/admin"
-            element={
-              <ProtectedRoute allowedRoles={['admin']}>
-                <AdminLayout />
-              </ProtectedRoute>
-            }
-          >
-            <Route index element={<AdminDashboard />} />
-            <Route path="users" element={<AdminUsersPage />} />
-            <Route path="structure" element={<AdminStructurePage />} />
-            <Route path="assignments" element={<TeachingAssignmentsPage />} />
-            <Route path="timetable" element={<TimetableAdminPage />} />
-            <Route path="settings" element={<AdminSettingsPage />} />
-            <Route path="reports" element={<ReportsPage />} />
-          </Route>
+            {/* Admin routes */}
+            <Route
+              path="/admin"
+              element={
+                <ProtectedRoute allowedRoles={['admin']}>
+                  <AdminLayout />
+                </ProtectedRoute>
+              }
+            >
+              <Route index element={<AdminDashboard />} />
+              <Route path="users" element={<AdminUsersPage />} />
+              <Route path="structure" element={<AdminStructurePage />} />
+              <Route path="assignments" element={<TeachingAssignmentsPage />} />
+              <Route path="timetable" element={<TimetableAdminPage />} />
+              <Route path="settings" element={<AdminSettingsPage />} />
+              <Route path="reports" element={<ReportsPage />} />
+            </Route>
 
-          {/* Catch-all: redirect to login */}
-          <Route path="*" element={<Navigate to="/login" replace />} />
-        </Routes>
+            {/* Catch-all: redirect to login */}
+            <Route path="*" element={<Navigate to="/login" replace />} />
+          </Routes>
+        </Suspense>
       </BrowserRouter>
 
       {/* Global toast notifications */}
