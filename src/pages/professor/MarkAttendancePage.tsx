@@ -351,6 +351,7 @@ export default function MarkAttendancePage() {
   } = useQuery({
     queryKey: ['date-session', assignmentId, sessionDate],
     enabled: !!assignmentId && !rawSessionId && !isSelectingAssignment,
+    refetchOnWindowFocus: false, // Prevent background refetch from mutating session detection state mid-marking
     queryFn: async () => {
       const { data, error } = await supabase
         .from('sessions')
@@ -378,6 +379,7 @@ export default function MarkAttendancePage() {
   } = useQuery({
     queryKey: ['session', effectiveSessionId],
     enabled: !!effectiveSessionId,
+    refetchOnWindowFocus: false,
     queryFn: async () => {
       const { data, error } = await supabase
         .from('sessions')
@@ -410,6 +412,7 @@ export default function MarkAttendancePage() {
   } = useQuery({
     queryKey: ['assignment', assignmentId],
     enabled: !!assignmentId,
+    refetchOnWindowFocus: false,
     queryFn: async () => {
       const { data, error } = await supabase
         .from('teaching_assignments')
@@ -435,6 +438,7 @@ export default function MarkAttendancePage() {
   } = useQuery({
     queryKey: ['class-students', classId, batchId],
     enabled: !!classId && !isSelectingAssignment,
+    refetchOnWindowFocus: false,
     queryFn: async () => {
       let query = supabase
         .from('students')
@@ -468,6 +472,7 @@ export default function MarkAttendancePage() {
   } = useQuery({
     queryKey: ['attendance-records', effectiveSessionId],
     enabled: !!effectiveSessionId && !isSelectingAssignment,
+    refetchOnWindowFocus: false, // In-progress attendance marking must not be clobbered by window focus
     queryFn: async () => {
       const { data, error } = await supabase
         .from('attendance_records')

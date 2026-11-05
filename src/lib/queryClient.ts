@@ -10,11 +10,11 @@ import { QueryClient } from '@tanstack/react-query'
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 30_000,
-      gcTime: 5 * 60 * 1000, // 5 minutes: promptly collects unused cache entries from memory
+      staleTime: 30_000, // 30 seconds: data remains fresh, suppressing duplicate calls during rapid app-switching
+      gcTime: 5 * 60 * 1000, // 5 minutes: unused cache is cleaned up from memory
       retry: 1,
-      refetchOnWindowFocus: false, // Prevents redundant background queries and RAM spikes on mobile app resume
-      refetchOnReconnect: 'always',
+      refetchOnWindowFocus: true, // Thoughtful freshness: revalidates when foregrounded IF data is actually stale
+      refetchOnReconnect: 'always', // Thoughtful resilience: revalidates when network connectivity recovers
     },
   },
 })

@@ -37,6 +37,7 @@ import { Capacitor } from '@capacitor/core'
 import { App as CapApp } from '@capacitor/app'
 import { StatusBar, Style } from '@capacitor/status-bar'
 import { SplashScreen } from '@capacitor/splash-screen'
+import { focusManager } from '@tanstack/react-query'
 
 // Shared QueryClient singleton — also used by useAuth for cache cleanup on sign-out
 import { queryClient } from './lib/queryClient'
@@ -69,6 +70,11 @@ function NativeMobileHandler() {
     // Hide splash screen once React has mounted
     SplashScreen.hide().catch(() => {})
 
+    // Forward native mobile app foreground/resume events to TanStack Query focusManager
+    const appStateListener = CapApp.addListener('appStateChange', ({ isActive }) => {
+      focusManager.setFocused(isActive)
+    })
+
     // Android hardware back button listener
     const backListener = CapApp.addListener('backButton', () => {
       // Allow custom handlers (dialog dismissal, wizard steps, unsaved changes guards) to intercept
@@ -92,6 +98,7 @@ function NativeMobileHandler() {
     })
 
     return () => {
+      appStateListener.then(handle => handle.remove()).catch(() => {})
       backListener.then(handle => handle.remove()).catch(() => {})
     }
   }, [navigate])
