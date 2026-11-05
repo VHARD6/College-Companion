@@ -40,7 +40,7 @@ export default function PrivacyPolicyPage() {
           <p className="text-xs sm:text-sm text-blue-100 leading-relaxed">
             College Companion is deployed as an institutional attendance and academic timetable management platform.
             This notice details our lawful processing of student and faculty data pursuant to the Indian Digital Personal
-            Data Protection (DPDP) Act, 2023, FERPA standards, and international data protection principles.
+            Data Protection (DPDP) Act, 2023 and FERPA-aligned educational record privacy standards.
           </p>
         </div>
 
@@ -98,8 +98,8 @@ export default function PrivacyPolicyPage() {
           <ul className="list-disc list-inside text-xs sm:text-sm text-gray-600 space-y-1.5 pl-1">
             <li>Tracking course completion and verifying attendance compliance against institutional thresholds (e.g. 75% rule).</li>
             <li>Publishing authoritative timetable slots, laboratory schedules, and classroom assignments.</li>
-            <li>Generating official university attendance rosters and statutory accreditation documentation.</li>
-            <li>Maintaining forensic audit trails of attendance corrections to prevent academic fraud.</li>
+            <li>Generating official university attendance rosters and institutional academic compliance reports.</li>
+            <li>Maintaining forensic audit trails of attendance corrections to prevent academic record discrepancies.</li>
           </ul>
         </section>
 
@@ -123,12 +123,13 @@ export default function PrivacyPolicyPage() {
             <h3>5. Scoped Access &amp; Forensic Immutability</h3>
           </div>
           <p className="text-xs sm:text-sm text-gray-600 leading-relaxed">
-            Data access is strictly scoped via PostgreSQL Row-Level Security (RLS) policies:
+            Data access and write operations are strictly scoped via PostgreSQL Row-Level Security (RLS) policies and authorized stored procedures:
           </p>
           <ul className="list-disc list-inside text-xs sm:text-sm text-gray-600 space-y-1.5 pl-1">
             <li><strong>Students:</strong> May inspect only their personal attendance percentages, lecture history, and enrolled timetable.</li>
-            <li><strong>Professors:</strong> May mark and correct attendance only for sessions within their verified teaching assignments.</li>
-            <li><strong>Audit Immutability:</strong> All attendance modifications after submission mandate a documented reason and are physically locked against deletion or modification by database trigger constraints.</li>
+            <li><strong>Professors:</strong> May record drafts and submit attendance only for sessions within their verified teaching assignments. Direct table writes are locked down, routing all updates through audited procedures.</li>
+            <li><strong>Controlled Corrections:</strong> Attendance corrections after submission require an institutional justification reason within the active policy correction window.</li>
+            <li><strong>Audit Trail Immutability:</strong> Every correction produces an insert-only record in the audit log, physically protected against modification or deletion by database trigger constraints.</li>
           </ul>
         </section>
 
@@ -144,9 +145,9 @@ export default function PrivacyPolicyPage() {
             or data handling concerns directly to:
           </p>
           <div className="bg-white rounded-xl border border-amber-200 p-3.5 text-xs text-gray-700 space-y-1 font-mono">
-            <p><span className="font-semibold text-gray-900">Designation:</span> Institutional Data Protection &amp; Grievance Redressal Cell</p>
+            <p><span className="font-semibold text-gray-900">Designation:</span> Institutional Data Protection &amp; Grievance Redressal Contact</p>
             <p><span className="font-semibold text-gray-900">Email:</span> privacy@collegecompanion.edu</p>
-            <p><span className="font-semibold text-gray-900">Statutory Resolution Timeline:</span> Acknowledgment within 48 hours; formal redressal within 30 days.</p>
+            <p><span className="font-semibold text-gray-900">Statutory Resolution Timeline:</span> Acknowledgment within 48 hours; formal redressal within 30 days pursuant to Section 13.</p>
           </div>
         </section>
 
