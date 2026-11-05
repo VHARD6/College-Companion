@@ -11,24 +11,38 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          if (id.includes('node_modules')) {
-            if (id.includes('react') || id.includes('react-dom') || id.includes('react-router-dom')) {
-              return 'vendor-react'
-            }
-            if (id.includes('@supabase')) {
-              return 'vendor-supabase'
-            }
-            if (id.includes('@tanstack')) {
-              return 'vendor-query'
-            }
-            if (id.includes('lucide-react')) {
-              return 'vendor-icons'
-            }
-            if (id.includes('@capacitor')) {
-              return 'vendor-capacitor'
-            }
-            return 'vendor-libs'
+          const normalized = id.replace(/\\/g, '/')
+          const lastNodeModulesIndex = normalized.lastIndexOf('/node_modules/')
+          if (lastNodeModulesIndex === -1) return
+
+          const subPath = normalized.slice(lastNodeModulesIndex + '/node_modules/'.length)
+          const parts = subPath.split('/')
+          const packageName = parts[0].startsWith('@') && parts.length > 1 ? `${parts[0]}/${parts[1]}` : parts[0]
+
+          if (packageName === 'lucide-react') {
+            return 'vendor-icons'
           }
+          if (packageName.startsWith('@supabase/')) {
+            return 'vendor-supabase'
+          }
+          if (packageName.startsWith('@tanstack/')) {
+            return 'vendor-query'
+          }
+          if (packageName.startsWith('@capacitor/')) {
+            return 'vendor-capacitor'
+          }
+          if (
+            packageName === 'react' ||
+            packageName === 'react-dom' ||
+            packageName === 'scheduler' ||
+            packageName.startsWith('react-router') ||
+            packageName === 'react-hot-toast' ||
+            packageName.startsWith('@remix-run/')
+          ) {
+            return 'vendor-react'
+          }
+
+          return 'vendor-libs'
         },
       },
     },
