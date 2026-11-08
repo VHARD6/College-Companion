@@ -10,6 +10,7 @@ import {
 } from '../src/lib/timetableImagePersistence.ts'
 import {
   createDefaultMasterTimetable,
+  createBlankMasterTimetable,
   DEFAULT_BRANCHES,
 } from '../src/lib/timetableDefaults.ts'
 
@@ -531,6 +532,26 @@ describe('Timetable Maker & Image Persistence Suite', () => {
         room: '702',
       }, 1)
       assert.strictEqual(practical.bgColor, '#FFFFFF')
+    })
+
+    it('creates a clean blank master timetable with dashes across all active period cells by default', () => {
+      const blank = createBlankMasterTimetable('03/11/2026')
+      assert.strictEqual(blank.date, '03/11/2026')
+      assert.strictEqual(blank.className, 'FY BTECH')
+      assert.strictEqual(blank.academicYear, '2026-27')
+      assert.strictEqual(blank.semester, 'I')
+      assert.deepStrictEqual(blank.branches, ['CSE:AIML', 'ENTC', 'COMP', 'IT'])
+
+      // Verify every non-break cell has dashes
+      const activePeriods = [1, 2, 4, 5, 7, 8]
+      for (const p of activePeriods) {
+        for (let b = 0; b < 4; b++) {
+          const cell = blank.cells[`${p}_${b}`]
+          assert.ok(cell, `Cell ${p}_${b} should exist in blank template`)
+          assert.strictEqual(cell.type, 'empty')
+          assert.strictEqual(cell.text, '-')
+        }
+      }
     })
   })
 })

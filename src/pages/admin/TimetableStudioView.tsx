@@ -6,6 +6,7 @@ import type { Subject, Professor } from '../../types'
 import type { MasterTimetableGridData, TimetableCellData } from '../../types/timetableMaker'
 import {
   createDefaultMasterTimetable,
+  createBlankMasterTimetable,
   DEFAULT_BRANCHES,
 } from '../../lib/timetableDefaults'
 import {
@@ -30,6 +31,7 @@ import {
   X,
   FileCheck,
   Megaphone,
+  History,
 } from 'lucide-react'
 
 export default function TimetableStudioView() {
@@ -42,10 +44,13 @@ export default function TimetableStudioView() {
   // Daily announcement
   const [announcement, setAnnouncement] = useState('')
 
-  // Grid Data State initialized with official college template
+  // Grid Data State initialized with clean blank timetable with dashes by default
   const [gridData, setGridData] = useState<MasterTimetableGridData>(() =>
-    createDefaultMasterTimetable(formatDateForOfficialDisplay(todayISO()))
+    createBlankMasterTimetable(formatDateForOfficialDisplay(todayISO()))
   )
+
+  // Loading state for previous day's timetable
+  const [isLoadingPreviousDay, setIsLoadingPreviousDay] = useState(false)
 
   // Cell Editor Modal State
   const [isEditorOpen, setIsEditorOpen] = useState(false)
@@ -121,6 +126,52 @@ export default function TimetableStudioView() {
       }
     } catch (err: any) {
       toast.error(err.message || 'Failed to load timetable')
+    }
+  }
+
+  // Load previous day's timetable and edit it
+  async function handleUsePreviousDay() {
+    setIsLoadingPreviousDay(true)
+    try {
+      const current = new Date(selectedDate)
+      current.setDate(current.getDate() - 1)
+      const prevDateISO = current.toISOString().split('T')[0]
+
+      // 1. Try exact previous day
+      let pub = await fetchPublishedTimetableByDate(prevDateISO, gridData.className || 'FY BTECH')
+
+      // 2. If no timetable was published on exact previous day (e.g. weekend/holiday),
+      // look for the most recently published date strictly before selectedDate
+      if (!pub?.grid_data && publishedDates && publishedDates.length > 0) {
+        const earlierDates = publishedDates
+          .map(p => p.timetable_date)
+          .filter(d => d < selectedDate)
+          .sort()
+          .reverse()
+
+        if (earlierDates.length > 0) {
+          pub = await fetchPublishedTimetableByDate(earlierDates[0], gridData.className || 'FY BTECH')
+        }
+      }
+
+      if (pub?.grid_data) {
+        setGridData({
+          ...pub.grid_data,
+          date: formatDateForOfficialDisplay(selectedDate),
+        })
+        if (pub.announcement) setAnnouncement(pub.announcement)
+        toast.success(
+          `Loaded timetable from ${formatDateForOfficialDisplay(pub.timetable_date)} for editing on ${formatDateForOfficialDisplay(selectedDate)}`
+        )
+      } else {
+        toast.error(
+          `No published timetable found prior to ${formatDateForOfficialDisplay(selectedDate)}. You can select a date from "Load Published Template" or edit the blank timetable.`
+        )
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to load previous day's timetable")
+    } finally {
+      setIsLoadingPreviousDay(false)
     }
   }
 
@@ -210,13 +261,37 @@ export default function TimetableStudioView() {
             <Button
               variant="outline"
               size="sm"
+              onClick={handleUsePreviousDay}
+              loading={isLoadingPreviousDay}
+              title="Copy and edit the timetable from the previous day"
+            >
+              <History size={14} className="mr-1.5" />
+              Use Previous Day
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => {
-                setGridData(createDefaultMasterTimetable(formatDateForOfficialDisplay(selectedDate)))
-                toast.success('Reset to official FY BTech default template')
+                setGridData(createBlankMasterTimetable(formatDateForOfficialDisplay(selectedDate)))
+                toast.success('Reset to clean blank timetable with dashes')
               }}
+              title="Reset to clean blank timetable with dashes"
             >
               <RotateCcw size={14} className="mr-1.5" />
-              Reset Default
+              Blank (Dashes)
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setGridData(createDefaultMasterTimetable(formatDateForOfficialDisplay(selectedDate)))
+                toast.success('Loaded official FY BTech sample reference template')
+              }}
+              title="Load official reference template sample"
+            >
+              Reference Sample
             </Button>
 
             <Button

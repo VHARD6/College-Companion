@@ -1,4 +1,4 @@
-import type { MasterTimetableGridData } from '../types/timetableMaker.ts'
+import type { MasterTimetableGridData, TimetableCellData } from '../types/timetableMaker.ts'
 
 export const DEFAULT_BRANCHES = ['CSE:AIML', 'ENTC', 'COMP', 'IT']
 
@@ -96,6 +96,33 @@ export function createDefaultMasterTimetable(dateStr = '22/10/2026'): MasterTime
       '8_2': { type: 'empty', text: '-' },
       '8_3': { type: 'empty', text: '-' },
     },
+    coordinators: [...DEFAULT_COORDINATORS],
+    practicalNotes: { ...DEFAULT_PRACTICAL_NOTES },
+  }
+}
+
+/**
+ * Returns a clean, blank master timetable with dashes (-) in all period cells.
+ */
+export function createBlankMasterTimetable(dateStr = '22/10/2026'): MasterTimetableGridData {
+  const cells: Record<string, TimetableCellData> = {}
+
+  // Active editable period IDs: 1, 2, 4, 5, 7, 8
+  const activePeriodIds = [1, 2, 4, 5, 7, 8]
+  for (const periodId of activePeriodIds) {
+    for (let bIdx = 0; bIdx < DEFAULT_BRANCHES.length; bIdx++) {
+      cells[`${periodId}_${bIdx}`] = { type: 'empty', text: '-' }
+    }
+  }
+
+  return {
+    academicYear: '2026-27',
+    semester: 'I',
+    className: 'FY BTECH',
+    date: dateStr,
+    branches: [...DEFAULT_BRANCHES],
+    periods: [...DEFAULT_PERIODS],
+    cells,
     coordinators: [...DEFAULT_COORDINATORS],
     practicalNotes: { ...DEFAULT_PRACTICAL_NOTES },
   }
