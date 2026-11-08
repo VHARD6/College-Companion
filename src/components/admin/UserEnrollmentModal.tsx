@@ -5,8 +5,9 @@ import Button from '../ui/Button'
 import Input from '../ui/Input'
 import Select from '../ui/Select'
 import toast from 'react-hot-toast'
-import { X } from 'lucide-react'
+import { X, ShieldAlert, Award, GraduationCap, UserCheck } from 'lucide-react'
 import { extractSingleRelation } from '../../lib/adminUtils'
+import type { Role } from '../../types'
 
 interface DepartmentRef {
   id: number
@@ -38,6 +39,7 @@ export default function UserEnrollmentModal({
 }: UserEnrollmentModalProps) {
   const queryClient = useQueryClient()
 
+  const [selectedRole, setSelectedRole] = useState<Role>('student')
   const [rollNo, setRollNo] = useState('')
   const [classId, setClassId] = useState('')
   const [batchId, setBatchId] = useState('')
@@ -47,6 +49,8 @@ export default function UserEnrollmentModal({
   // Initialize fields whenever user opens
   useEffect(() => {
     if (!user) return
+
+    setSelectedRole(user.role as Role)
 
     if (user.role === 'student') {
       const studentRec = extractSingleRelation(user.students)
@@ -61,16 +65,28 @@ export default function UserEnrollmentModal({
           ? String(classes.find(c => String(c.id) === initialClassId)?.department_id)
           : ''
       setStudentDeptId(initialDeptId)
+      setDepartmentId('')
     } else if (user.role === 'professor') {
       const profRec = extractSingleRelation(user.professors)
       setDepartmentId(profRec?.department_id ? String(profRec.department_id) : '')
+      setRollNo('')
+      setClassId('')
+      setBatchId('')
+      setStudentDeptId('')
+    } else {
+      // Admin
+      setRollNo('')
+      setClassId('')
+      setBatchId('')
+      setDepartmentId('')
+      setStudentDeptId('')
     }
   }, [user, classes])
 
   // Batches for selected class
   const { data: editBatches } = useQuery({
     queryKey: ['batches-list', classId],
-    enabled: !!classId,
+    enabled: !!classId && selectedRole === 'student',
     queryFn: async () => {
       const { data, error } = await supabase.from('batches').select('*').eq('class_id', Number(classId))
       if (error) throw error
@@ -78,15 +94,15 @@ export default function UserEnrollmentModal({
     },
   })
 
-  // Save Assignment Mutation with read-after-write verification
+  // Save Assignment & Role Transition Mutation via secure RPC admin_set_user_role
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!user) return
 
-      if (user.role === 'student') {
+      if (selectedRole === 'student') {
         const trimmedRollNo = rollNo.trim()
         if (!trimmedRollNo) {
-          throw new Error('Roll number is required for student enrollment.')
+          throw new Error('Roll number is required for student role.')
         }
 
         const classIdNum = classId ? Number(classId) : null
@@ -106,82 +122,35 @@ export default function UserEnrollmentModal({
             throw new Error('Selected practical batch does not belong to the selected class division.')
           }
         }
-
-        // Check roll number uniqueness
-        const { data: existingStudentWithRoll, error: rollCheckErr } = await supabase
-          .from('students')
-          .select('id, user_id, roll_no')
-          .eq('roll_no', trimmedRollNo)
-          .maybeSingle()
-
-        if (rollCheckErr) throw rollCheckErr
-        if (existingStudentWithRoll && existingStudentWithRoll.user_id !== user.id) {
-          throw new Error(`Roll number "${trimmedRollNo}" is already assigned to another student.`)
-        }
-
-        // Upsert student with confirmed read-after-write
-        const { data: savedStudent, error: studentError } = await supabase
-          .from('students')
-          .upsert(
-            {
-              user_id: user.id,
-              roll_no: trimmedRollNo,
-              class_id: classIdNum,
-              batch_id: batchIdNum,
-            },
-            { onConflict: 'user_id' }
-          )
-          .select(`
-            id,
-            user_id,
-            roll_no,
-            class_id,
-            batch_id,
-            classes(id, name, semester, department_id, departments(id, name)),
-            batches(id, name)
-          `)
-
-        if (studentError) throw studentError
-        if (!savedStudent || savedStudent.length === 0) {
-          throw new Error('Failed to persist student enrollment. Zero rows were updated in the database.')
-        }
-
-        return { role: 'student', data: savedStudent[0] }
-      } else if (user.role === 'professor') {
+      } else if (selectedRole === 'professor') {
         if (!departmentId) {
-          throw new Error('Please select a department for this professor.')
+          throw new Error('Please select an assigned department for the professor.')
         }
-
         const deptIdNum = Number(departmentId)
         if (isNaN(deptIdNum)) {
           throw new Error('Invalid department selected.')
         }
-
-        // Upsert professor with confirmed read-after-write
-        const { data: savedProf, error: profError } = await supabase
-          .from('professors')
-          .upsert(
-            {
-              user_id: user.id,
-              department_id: deptIdNum,
-            },
-            { onConflict: 'user_id' }
-          )
-          .select('id, user_id, department_id, departments(id, name)')
-
-        if (profError) throw profError
-        if (!savedProf || savedProf.length === 0) {
-          throw new Error('Failed to persist professor department assignment. Zero rows were updated in the database.')
-        }
-
-        return { role: 'professor', data: savedProf[0] }
       }
+
+      // Execute atomic admin role transition RPC
+      const { data, error } = await supabase.rpc('admin_set_user_role', {
+        p_user_id: user.id,
+        p_new_role: selectedRole,
+        p_roll_no: selectedRole === 'student' ? rollNo.trim() : null,
+        p_class_id: selectedRole === 'student' && classId ? Number(classId) : null,
+        p_batch_id: selectedRole === 'student' && batchId ? Number(batchId) : null,
+        p_department_id: selectedRole === 'professor' && departmentId ? Number(departmentId) : null,
+      })
+
+      if (error) throw error
+      return data
     },
-    onSuccess: result => {
+    onSuccess: () => {
+      const roleName = selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)
       toast.success(
-        result?.role === 'student'
-          ? 'Student enrollment updated and verified!'
-          : 'Professor department assigned and verified!'
+        selectedRole !== user?.role
+          ? `User promoted/reassigned to ${roleName} successfully!`
+          : `${roleName} details updated and verified!`
       )
       onSuccess()
       onClose()
@@ -192,21 +161,26 @@ export default function UserEnrollmentModal({
       queryClient.invalidateQueries({ queryKey: ['professor-all-assignments'] })
     },
     onError: (err: any) => {
-      toast.error(err.message ?? 'Failed to update assignment')
+      toast.error(err.message ?? 'Failed to update user role/assignment')
     },
   })
 
   if (!user) return null
 
+  const isRoleChanged = selectedRole !== user.role
+
   return (
     <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in">
-      <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+      <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between border-b border-gray-100 pb-3">
           <div>
             <h3 className="font-bold text-gray-900 text-base">
-              {user.role === 'student' ? 'Manage Student Enrollment' : 'Assign Professor Department'}
+              Manage Account &amp; Role
             </h3>
-            <p className="text-xs text-gray-500 mt-0.5">{user.name}</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {user.name} &bull; Current Role:{' '}
+              <span className="font-medium text-gray-800 capitalize">{user.role}</span>
+            </p>
           </div>
           <button
             type="button"
@@ -217,8 +191,48 @@ export default function UserEnrollmentModal({
           </button>
         </div>
 
-        {user.role === 'student' && (
-          <div className="space-y-3">
+        {/* Role Selector */}
+        <div>
+          <Select
+            label="Account Role"
+            value={selectedRole}
+            onChange={e => setSelectedRole(e.target.value as Role)}
+            options={[
+              { value: 'student', label: 'Student' },
+              { value: 'professor', label: 'Professor' },
+              { value: 'admin', label: 'Administrator' },
+            ]}
+          />
+          <p className="text-[11px] text-gray-500 mt-1">
+            Accounts cannot co-exist across multiple roles. Changing the role cleanly transitions the user and retires obsolete records.
+          </p>
+        </div>
+
+        {/* Notice if role changed */}
+        {isRoleChanged && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 text-xs text-amber-900 flex items-start gap-2.5">
+            <ShieldAlert size={18} className="text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold">Role Transition Warning</p>
+              <p className="mt-0.5 text-amber-800">
+                Switching from <strong className="capitalize">{user.role}</strong> to{' '}
+                <strong className="capitalize">{selectedRole}</strong>.
+                {selectedRole === 'admin' && ' This grants full portal administrative privileges.'}
+                {selectedRole === 'professor' && ' Student records and enrollments will be retired.'}
+                {selectedRole === 'student' && ' Professor department assignments will be retired.'}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Student Specific Fields */}
+        {selectedRole === 'student' && (
+          <div className="space-y-3 bg-blue-50/40 border border-blue-100 rounded-2xl p-3.5">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-blue-900 mb-1">
+              <GraduationCap size={15} />
+              <span>Student Enrollment Details</span>
+            </div>
+
             <Input
               label="Roll Number"
               placeholder="e.g. CS2401"
@@ -246,7 +260,7 @@ export default function UserEnrollmentModal({
                 options={departments?.map(d => ({ value: d.id, label: d.name })) ?? []}
               />
               <p className="text-[11px] text-gray-500 mt-1">
-                Filtering class divisions by department. Students belong to a branch via their class enrollment.
+                Filter class divisions by academic branch.
               </p>
             </div>
 
@@ -291,7 +305,7 @@ export default function UserEnrollmentModal({
                 (selectedClass.departments as any)?.name ??
                 departments?.find(d => d.id === selectedClass.department_id)?.name
               return (
-                <div className="bg-blue-50/70 border border-blue-100 rounded-xl p-2.5 text-xs text-blue-900">
+                <div className="bg-white border border-blue-200 rounded-xl p-2.5 text-xs text-blue-900 shadow-2xs">
                   <p className="font-semibold">{selectedClass.name} — Semester {selectedClass.semester}</p>
                   <p className="text-blue-700 mt-0.5">Academic Branch: {deptName ?? 'Unassigned'}</p>
                   {batchId ? (
@@ -307,8 +321,14 @@ export default function UserEnrollmentModal({
           </div>
         )}
 
-        {user.role === 'professor' && (
-          <div className="space-y-3">
+        {/* Professor Specific Fields */}
+        {selectedRole === 'professor' && (
+          <div className="space-y-3 bg-indigo-50/40 border border-indigo-100 rounded-2xl p-3.5">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-indigo-900 mb-1">
+              <UserCheck size={15} />
+              <span>Professor Department Assignment</span>
+            </div>
+
             <Select
               label="Assigned Department"
               placeholder="Select department..."
@@ -317,7 +337,23 @@ export default function UserEnrollmentModal({
               options={departments?.map(d => ({ value: d.id, label: d.name })) ?? []}
             />
             <p className="text-xs text-gray-500">
-              Department professors are permitted to mark attendance for their assigned subject teaching assignments.
+              Professors can be assigned teaching subjects and manage attendance for their assigned classes.
+            </p>
+          </div>
+        )}
+
+        {/* Admin Specific Notice */}
+        {selectedRole === 'admin' && (
+          <div className="bg-purple-50/60 border border-purple-100 rounded-2xl p-4 text-xs text-purple-900 space-y-2">
+            <div className="flex items-center gap-1.5 font-semibold text-purple-950">
+              <Award size={16} className="text-purple-600" />
+              <span>Administrator Privileges</span>
+            </div>
+            <p className="text-purple-800">
+              Administrators possess elevated authority to manage college academic structures, subjects, users, timetable schedules, and attendance policy settings.
+            </p>
+            <p className="text-[11px] text-purple-600">
+              Administrator accounts do not require student enrollment or professor department assignments.
             </p>
           </div>
         )}
@@ -335,7 +371,7 @@ export default function UserEnrollmentModal({
             loading={saveMutation.isPending}
             onClick={() => saveMutation.mutate()}
           >
-            Save Assignment
+            {isRoleChanged ? 'Save & Change Role' : 'Save Changes'}
           </Button>
         </div>
       </div>

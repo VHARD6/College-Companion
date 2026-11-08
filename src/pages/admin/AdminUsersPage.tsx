@@ -533,20 +533,27 @@ export default function AdminUsersPage() {
                           )}
                         </div>
                       )}
+
+                      {/* Admin Status Details */}
+                      {user.role === 'admin' && (
+                        <div className="mt-1 text-xs text-gray-500">
+                          <p>Full Administrator Access &bull; Academic Structure, Users &amp; Timetable</p>
+                        </div>
+                      )}
                     </div>
 
                     {/* Actions */}
                     <div className="flex items-center gap-1.5 shrink-0">
-                      {(user.role === 'student' || user.role === 'professor') && (
-                        <button
-                          type="button"
-                          className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-lg font-medium transition-colors"
-                          onClick={() => handleOpenEdit(user)}
-                        >
-                          <Edit3 size={12} />
-                          <span>{user.role === 'student' ? 'Enroll' : 'Assign'}</span>
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-lg font-medium transition-colors"
+                        onClick={() => handleOpenEdit(user)}
+                      >
+                        <Edit3 size={12} />
+                        <span>
+                          {user.role === 'student' ? 'Enroll / Role' : user.role === 'professor' ? 'Assign / Role' : 'Manage Role'}
+                        </span>
+                      </button>
 
                       <button
                         type="button"
