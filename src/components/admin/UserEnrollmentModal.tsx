@@ -5,7 +5,7 @@ import Button from '../ui/Button'
 import Input from '../ui/Input'
 import Select from '../ui/Select'
 import toast from 'react-hot-toast'
-import { X, ShieldAlert, Award, GraduationCap, UserCheck } from 'lucide-react'
+import { X, ShieldAlert, Award, GraduationCap, UserCheck, BookOpen } from 'lucide-react'
 import { extractSingleRelation } from '../../lib/adminUtils'
 import type { Role } from '../../types'
 
@@ -45,6 +45,7 @@ export default function UserEnrollmentModal({
   const [batchId, setBatchId] = useState('')
   const [departmentId, setDepartmentId] = useState('')
   const [studentDeptId, setStudentDeptId] = useState('')
+  const [studentSemester, setStudentSemester] = useState('')
 
   // Initialize fields whenever user opens
   useEffect(() => {
@@ -65,6 +66,14 @@ export default function UserEnrollmentModal({
           ? String(classes.find(c => String(c.id) === initialClassId)?.department_id)
           : ''
       setStudentDeptId(initialDeptId)
+
+      const initialSem = studentRec?.classes?.semester
+        ? String(studentRec.classes.semester)
+        : classes?.find(c => String(c.id) === initialClassId)?.semester
+          ? String(classes.find(c => String(c.id) === initialClassId)?.semester)
+          : ''
+      setStudentSemester(initialSem)
+
       setDepartmentId('')
     } else if (user.role === 'professor') {
       const profRec = extractSingleRelation(user.professors)
@@ -73,6 +82,7 @@ export default function UserEnrollmentModal({
       setClassId('')
       setBatchId('')
       setStudentDeptId('')
+      setStudentSemester('')
     } else {
       // Admin
       setRollNo('')
@@ -80,6 +90,7 @@ export default function UserEnrollmentModal({
       setBatchId('')
       setDepartmentId('')
       setStudentDeptId('')
+      setStudentSemester('')
     }
   }, [user, classes])
 
@@ -91,6 +102,24 @@ export default function UserEnrollmentModal({
       const { data, error } = await supabase.from('batches').select('*').eq('class_id', Number(classId))
       if (error) throw error
       return data ?? []
+    },
+  })
+
+  // Dynamic query: Allotted subjects for selected class (via teaching_assignments)
+  const { data: allottedSubjects } = useQuery({
+    queryKey: ['class-allotted-subjects', classId],
+    enabled: !!classId && selectedRole === 'student',
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('teaching_assignments')
+        .select('subject_id, subjects(id, name, code, type)')
+        .eq('class_id', Number(classId))
+      if (error) throw error
+      const map = new Map<number, any>()
+      data?.forEach((a: any) => {
+        if (a.subjects) map.set(a.subjects.id, a.subjects)
+      })
+      return Array.from(map.values())
     },
   })
 
@@ -240,28 +269,62 @@ export default function UserEnrollmentModal({
               onChange={e => setRollNo(e.target.value)}
             />
 
-            {/* Academic Department / Branch Filter */}
-            <div>
-              <Select
-                label="Academic Department / Branch"
-                placeholder="Select department / branch..."
-                value={studentDeptId}
-                onChange={e => {
-                  const newDeptId = e.target.value
-                  setStudentDeptId(newDeptId)
-                  if (newDeptId && classId) {
-                    const cls = classes?.find(c => String(c.id) === classId)
-                    if (cls && String(cls.department_id) !== newDeptId) {
-                      setClassId('')
-                      setBatchId('')
+            {/* Academic Department / Branch & Semester Filter */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div>
+                <Select
+                  label="Branch / Department"
+                  placeholder="Select branch..."
+                  value={studentDeptId}
+                  onChange={e => {
+                    const newDeptId = e.target.value
+                    setStudentDeptId(newDeptId)
+                    setClassId('')
+                    setBatchId('')
+                    // If exactly 1 class matches this branch and current semester, auto-select it
+                    const matches = classes?.filter(c => 
+                      (!newDeptId || String(c.department_id) === newDeptId) &&
+                      (!studentSemester || String(c.semester) === studentSemester)
+                    ) ?? []
+                    if (matches.length === 1) {
+                      setClassId(String(matches[0].id))
                     }
-                  }
-                }}
-                options={departments?.map(d => ({ value: d.id, label: d.name })) ?? []}
-              />
-              <p className="text-[11px] text-gray-500 mt-1">
-                Filter class divisions by academic branch.
-              </p>
+                  }}
+                  options={departments?.map(d => ({ value: d.id, label: d.name })) ?? []}
+                />
+              </div>
+
+              <div>
+                <Select
+                  label="Semester"
+                  placeholder="Select semester..."
+                  value={studentSemester}
+                  onChange={e => {
+                    const newSem = e.target.value
+                    setStudentSemester(newSem)
+                    setClassId('')
+                    setBatchId('')
+                    // If exactly 1 class matches this semester and current branch, auto-select it
+                    const matches = classes?.filter(c => 
+                      (!studentDeptId || String(c.department_id) === studentDeptId) &&
+                      (!newSem || String(c.semester) === newSem)
+                    ) ?? []
+                    if (matches.length === 1) {
+                      setClassId(String(matches[0].id))
+                    }
+                  }}
+                  options={[
+                    { value: '1', label: 'Semester 1' },
+                    { value: '2', label: 'Semester 2' },
+                    { value: '3', label: 'Semester 3' },
+                    { value: '4', label: 'Semester 4' },
+                    { value: '5', label: 'Semester 5' },
+                    { value: '6', label: 'Semester 6' },
+                    { value: '7', label: 'Semester 7' },
+                    { value: '8', label: 'Semester 8' },
+                  ]}
+                />
+              </div>
             </div>
 
             <Select
@@ -274,15 +337,17 @@ export default function UserEnrollmentModal({
                 setBatchId('')
                 if (newClassId) {
                   const cls = classes?.find(c => String(c.id) === newClassId)
-                  if (cls?.department_id) {
-                    setStudentDeptId(String(cls.department_id))
+                  if (cls) {
+                    if (cls.department_id) setStudentDeptId(String(cls.department_id))
+                    if (cls.semester) setStudentSemester(String(cls.semester))
                   }
                 }
               }}
-              options={(studentDeptId
-                ? classes?.filter(c => String(c.department_id) === studentDeptId)
-                : classes
-              )?.map(c => ({
+              options={(classes?.filter(c => {
+                if (studentDeptId && String(c.department_id) !== studentDeptId) return false
+                if (studentSemester && String(c.semester) !== studentSemester) return false
+                return true
+              }) ?? classes ?? [])?.map(c => ({
                 value: c.id,
                 label: `${c.name} — Sem ${c.semester} (${(c.departments as any)?.name ?? 'Dept'})`,
               })) ?? []}
@@ -305,15 +370,38 @@ export default function UserEnrollmentModal({
                 (selectedClass.departments as any)?.name ??
                 departments?.find(d => d.id === selectedClass.department_id)?.name
               return (
-                <div className="bg-white border border-blue-200 rounded-xl p-2.5 text-xs text-blue-900 shadow-2xs">
-                  <p className="font-semibold">{selectedClass.name} — Semester {selectedClass.semester}</p>
-                  <p className="text-blue-700 mt-0.5">Academic Branch: {deptName ?? 'Unassigned'}</p>
-                  {batchId ? (
-                    <p className="text-blue-600 mt-0.5">
-                      Batch: {editBatches?.find(b => String(b.id) === batchId)?.name}
-                    </p>
-                  ) : (
-                    <p className="text-gray-500 mt-0.5">General enrollment (all practical batches)</p>
+                <div className="bg-white border border-blue-200 rounded-xl p-3 text-xs text-blue-900 shadow-2xs space-y-2">
+                  <div>
+                    <p className="font-semibold">{selectedClass.name} — Semester {selectedClass.semester}</p>
+                    <p className="text-blue-700 mt-0.5">Academic Branch: {deptName ?? 'Unassigned'}</p>
+                    {batchId ? (
+                      <p className="text-blue-600 mt-0.5">
+                        Batch: {editBatches?.find(b => String(b.id) === batchId)?.name}
+                      </p>
+                    ) : (
+                      <p className="text-gray-500 mt-0.5">General enrollment (all practical batches)</p>
+                    )}
+                  </div>
+
+                  {/* Dynamic Allotted Curriculum Preview */}
+                  {allottedSubjects && allottedSubjects.length > 0 && (
+                    <div className="pt-2 border-t border-blue-100">
+                      <p className="font-semibold text-blue-950 flex items-center gap-1.5 mb-1.5">
+                        <BookOpen size={13} className="text-blue-600" />
+                        <span>Allotted Curriculum Pool ({allottedSubjects.length} subjects)</span>
+                      </p>
+                      <div className="flex flex-wrap gap-1">
+                        {allottedSubjects.map(s => (
+                          <span
+                            key={s.id}
+                            className="inline-flex items-center px-2 py-0.5 rounded-md bg-blue-50 border border-blue-200 text-blue-800 font-medium text-[11px]"
+                            title={`${s.name} (${s.code})`}
+                          >
+                            {s.code || s.name}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
                   )}
                 </div>
               )
