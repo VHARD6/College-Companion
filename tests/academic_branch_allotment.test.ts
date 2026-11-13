@@ -28,11 +28,6 @@ describe('FY Dynamic Curriculum & Scalable Branch Allotment Test Suite', () => {
       assert.match(sql, /INSERT INTO public\.batches.*'Batch 2'/s, 'Must provision Batch 2 for Sem 2')
     })
 
-    it('verifies EM-II subject definition for Semester 2', () => {
-      const sql = fs.readFileSync(migrationPath, 'utf8')
-      assert.match(sql, /'EM-II \[ST\]'.*'EM-II-ST'/s, 'Must insert EM-II [ST] with code EM-II-ST')
-    })
-
     it('verifies admin_bulk_assign_students RPC authorization and round-robin batch logic', () => {
       const sql = fs.readFileSync(migrationPath, 'utf8')
       assert.match(sql, /CREATE OR REPLACE FUNCTION public\.admin_bulk_assign_students/i, 'Must define admin_bulk_assign_students')
@@ -40,6 +35,19 @@ describe('FY Dynamic Curriculum & Scalable Branch Allotment Test Suite', () => {
       assert.match(sql, /v_caller_role != 'admin'/i, 'RPC must enforce admin role check')
       assert.match(sql, /v_caller_active IS NOT TRUE/i, 'RPC must reject inactive accounts')
       assert.match(sql, /p_auto_distribute_batches/i, 'RPC must support auto-distributing batches')
+    })
+
+    it('verifies migration 016 standardizes to EM-I, retires EM-II, and decouples WP from default main pool', () => {
+      const m16Path = path.join(root, 'supabase', 'migrations', '016_refactor_fy_curriculum_em1_and_wp.sql')
+      assert.ok(fs.existsSync(m16Path), 'Migration 016 file must exist on disk')
+
+      const sql = fs.readFileSync(m16Path, 'utf8')
+      assert.match(sql, /DELETE FROM public\.subjects WHERE id = v_s_em2/i, 'Must remove EM-II-ST from subjects')
+      assert.match(sql, /v_s_em1.*v_c1_s2/s, 'Must provision EM-I-ST for CSE:AIML Sem 2')
+      assert.match(sql, /v_s_em1.*v_c2_s2/s, 'Must provision EM-I-ST for ENTC Sem 2')
+      assert.match(sql, /v_s_em1.*v_c3_s2/s, 'Must provision EM-I-ST for COMP Sem 2')
+      assert.match(sql, /v_s_em1.*v_c4_s2/s, 'Must provision EM-I-ST for IT Sem 2')
+      assert.match(sql, /DELETE FROM public\.teaching_assignments ta.*v_s_wp/s, 'Must remove WP-KVK from whole-class teaching assignments')
     })
   })
 
@@ -52,66 +60,70 @@ describe('FY Dynamic Curriculum & Scalable Branch Allotment Test Suite', () => {
       { id: 4, name: 'IT' },
     ]
 
-    const poolASubjectsSem1 = ['EM-I-ST', 'CHEM-PSS', 'EM-RYP', 'CS-PP', 'PPS-AK']
-    const poolBSubjectsSem1 = ['EM-I-ST', 'PHY-CDM', 'BCME-KVK', 'BEEE-ABI', 'EG-KVK', 'WP-KVK'] // or EG-AP for IT
-
-    const poolASubjectsSem2 = ['EM-II-ST', 'CHEM-PSS', 'EM-RYP', 'CS-PP', 'PPS-AK']
-    const poolBSubjectsSem2 = ['EM-II-ST', 'PHY-CDM', 'BCME-KVK', 'BEEE-ABI', 'EG-KVK', 'WP-KVK']
+    // Pool A (5 subjects): EM-I, CHEM, EM, CS, PPS
+    const poolASubjects = ['EM-I-ST', 'CHEM-PSS', 'EM-RYP', 'CS-PP', 'PPS-AK']
+    // Pool B (5 subjects): EM-I, PHY, BCME, BEEE, EG (WP is conditional/elective for students without EG)
+    const poolBSubjects = ['EM-I-ST', 'PHY-CDM', 'BCME-KVK', 'BEEE-ABI', 'EG-KVK'] // or EG-AP for IT/ENTC
 
     // Simulating database resolver for teaching assignments
     function resolveCurriculumPool(deptId: number, semester: number): string[] {
       // Branches 1 (CSE:AIML) and 2 (ENTC):
       // Sem 1 -> Pool A, Sem 2 -> Pool B (Inverted)
       if (deptId === 1 || deptId === 2) {
-        return semester === 1 ? poolASubjectsSem1 : poolBSubjectsSem2
+        return semester === 1 ? poolASubjects : poolBSubjects
       }
       // Branches 3 (COMP) and 4 (IT):
       // Sem 1 -> Pool B, Sem 2 -> Pool A (Inverted)
       if (deptId === 3 || deptId === 4) {
-        return semester === 1 ? poolBSubjectsSem1 : poolASubjectsSem2
+        return semester === 1 ? poolBSubjects : poolASubjects
       }
       return []
     }
 
-    it('correctly allocates Pool A to CSE:AIML and ENTC in Semester 1', () => {
+    it('correctly allocates Pool A (5 subjects) to CSE:AIML and ENTC in Semester 1', () => {
       const cseSem1 = resolveCurriculumPool(1, 1)
       const entcSem1 = resolveCurriculumPool(2, 1)
 
-      assert.equal(cseSem1.length, 5)
+      assert.equal(cseSem1.length, 5, 'Pool A must have exactly 5 subjects')
       assert.deepEqual(cseSem1, ['EM-I-ST', 'CHEM-PSS', 'EM-RYP', 'CS-PP', 'PPS-AK'])
       assert.deepEqual(entcSem1, cseSem1)
     })
 
-    it('correctly allocates Pool B to COMP and IT in Semester 1', () => {
+    it('correctly allocates Pool B (5 subjects without default whole-class WP) to COMP and IT in Semester 1', () => {
       const compSem1 = resolveCurriculumPool(3, 1)
       const itSem1 = resolveCurriculumPool(4, 1)
 
-      assert.equal(compSem1.length, 6)
-      assert.ok(compSem1.includes('PHY-CDM'))
-      assert.ok(compSem1.includes('BCME-KVK'))
-      assert.ok(compSem1.includes('BEEE-ABI'))
-      assert.ok(compSem1.includes('WP-KVK'))
+      assert.equal(compSem1.length, 5, 'Pool B must have exactly 5 core subjects')
+      assert.ok(compSem1.includes('EM-I-ST'), 'Must include EM-I in Semester 1')
+      assert.ok(compSem1.includes('PHY-CDM'), 'Must include Physics')
+      assert.ok(compSem1.includes('BCME-KVK'), 'Must include BCME')
+      assert.ok(compSem1.includes('BEEE-ABI'), 'Must include BEEE')
+      assert.ok(compSem1.includes('EG-KVK'), 'Must include Engineering Graphics')
+      assert.ok(!compSem1.includes('WP-KVK'), 'WP must NOT be in default whole-class pool')
       assert.deepEqual(itSem1, compSem1)
     })
 
-    it('correctly inverts curriculum pool in Semester 2 (CSE:AIML and ENTC get Pool B with EM-II)', () => {
+    it('correctly inverts curriculum pool in Semester 2 (CSE:AIML and ENTC get Pool B with EM-I, exactly 5 subjects)', () => {
       const cseSem2 = resolveCurriculumPool(1, 2)
       const entcSem2 = resolveCurriculumPool(2, 2)
 
-      assert.equal(cseSem2.length, 6)
-      assert.ok(cseSem2.includes('EM-II-ST'), 'Must include EM-II in Semester 2')
+      assert.equal(cseSem2.length, 5, 'Inverted Pool B must have exactly 5 subjects')
+      assert.ok(cseSem2.includes('EM-I-ST'), 'Must include EM-I in Semester 2 (no EM-II)')
+      assert.ok(!cseSem2.includes('EM-II-ST'), 'EM-II must NOT exist')
       assert.ok(cseSem2.includes('PHY-CDM'), 'Must include Physics')
       assert.ok(cseSem2.includes('BCME-KVK'), 'Must include BCME')
       assert.ok(cseSem2.includes('BEEE-ABI'), 'Must include BEEE')
+      assert.ok(!cseSem2.includes('WP-KVK'), 'WP must NOT be in default whole-class pool')
       assert.deepEqual(entcSem2, cseSem2)
     })
 
-    it('correctly inverts curriculum pool in Semester 2 (COMP and IT get Pool A with EM-II)', () => {
+    it('correctly inverts curriculum pool in Semester 2 (COMP and IT get Pool A with EM-I, exactly 5 subjects)', () => {
       const compSem2 = resolveCurriculumPool(3, 2)
       const itSem2 = resolveCurriculumPool(4, 2)
 
-      assert.equal(compSem2.length, 5)
-      assert.ok(compSem2.includes('EM-II-ST'), 'Must include EM-II in Semester 2')
+      assert.equal(compSem2.length, 5, 'Inverted Pool A must have exactly 5 subjects')
+      assert.ok(compSem2.includes('EM-I-ST'), 'Must include EM-I in Semester 2 (no EM-II)')
+      assert.ok(!compSem2.includes('EM-II-ST'), 'EM-II must NOT exist')
       assert.ok(compSem2.includes('CHEM-PSS'), 'Must include Chemistry')
       assert.ok(compSem2.includes('EM-RYP'), 'Must include Engineering Mechanics')
       assert.ok(compSem2.includes('CS-PP'), 'Must include Communication Skills')
@@ -119,9 +131,9 @@ describe('FY Dynamic Curriculum & Scalable Branch Allotment Test Suite', () => {
       assert.deepEqual(itSem2, compSem2)
     })
 
-    it('ensures Pool A and Pool B are disjoint except for the core Mathematics subject', () => {
-      const poolAOnly = poolASubjectsSem1.filter(s => !s.startsWith('EM-'))
-      const poolBOnly = poolBSubjectsSem1.filter(s => !s.startsWith('EM-'))
+    it('ensures Pool A and Pool B are disjoint except for the core Mathematics subject (EM-I-ST)', () => {
+      const poolAOnly = poolASubjects.filter(s => !s.startsWith('EM-'))
+      const poolBOnly = poolBSubjects.filter(s => !s.startsWith('EM-'))
 
       const intersection = poolAOnly.filter(s => poolBOnly.includes(s))
       assert.equal(intersection.length, 0, 'Pool A non-math subjects must not overlap with Pool B')
